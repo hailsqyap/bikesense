@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<title>BikeSense Recorder</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#ffffff; --ink:#0f172a; --muted:#5b6475; --line:#d9dde4;
+    --accent:#0b63ce; --ok:#14804a; --warn:#b45309; --bad:#c0262d;
+    --crowd:#7c3aed; --music:#db2777; --traffic:#475569; --near:#c0262d; --sync:#0b63ce;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0b0f17; --card:#151b26; --ink:#eef2f7; --muted:#9aa4b5; --line:#2a3342; --accent:#5aa2ff; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-text-size-adjust:100%}
+  main{max-width:640px;margin:0 auto;padding:12px 14px calc(24px + env(safe-area-inset-bottom))}
+  h1{font-size:20px;margin:6px 0 2px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:0 0 12px}
+  .card h2{font-size:15px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  label{display:block;font-size:13px;font-weight:600;margin:10px 0 4px}
+  .hint{font-weight:400;color:var(--muted);font-size:12px}
+  input[type=text],input[type=number],select,textarea{width:100%;font-size:16px;padding:10px;border-radius:10px;
+    border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+  textarea{min-height:60px}
+  .row{display:flex;gap:10px}.row>*{flex:1}
+  .check{display:flex;align-items:center;gap:8px;font-weight:500;margin:8px 0}
+  .check input{width:22px;height:22px}
+  button{font:inherit;font-size:16px;font-weight:700;border:0;border-radius:12px;padding:14px 16px;cursor:pointer;
+    background:var(--accent);color:#fff;width:100%;touch-action:manipulation}
+  button.secondary{background:transparent;color:var(--accent);border:2px solid var(--accent)}
+  button.danger{background:var(--bad)}
+  button:disabled{opacity:.45}
+  .banner{border-radius:12px;padding:10px 12px;font-size:14px;margin:0 0 12px}
+  .banner.bad{background:#fde8e8;color:#7f1d1d;border:1px solid #f5b5b5}
+  .banner.warn{background:#fff4e0;color:#7a3e00;border:1px solid #f3cf8e}
+  .banner.ok{background:#e5f6ec;color:#0d5132;border:1px solid #a8dcbc}
+  .hidden{display:none!important}
+  .bigtime{font-variant-numeric:tabular-nums;font-size:44px;font-weight:800;text-align:center;letter-spacing:.02em}
+  .status{text-align:center;font-weight:700;font-size:15px;margin-bottom:8px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .tile{border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:var(--bg)}
+  .tile .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  .tile .v{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums}
+  .tile .u{font-size:12px;color:var(--muted);font-weight:600}
+  canvas{width:100%;height:90px;display:block;border-radius:10px;background:var(--bg);border:1px solid var(--line);margin-top:8px}
+  .marks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+  .marks button{padding:18px 8px;font-size:17px}
+  .m-crowd{background:var(--crowd)}.m-music{background:var(--music)}.m-traffic{background:var(--traffic)}
+  .m-near{background:var(--near)}.m-sync{background:var(--sync)}.m-note{background:#6b7280}
+  .log{font-size:12px;color:var(--muted);max-height:110px;overflow:auto;margin-top:8px;font-family:ui-monospace,Menlo,monospace}
+  .sess{border-top:1px solid var(--line);padding:10px 0}
+  .sess:first-child{border-top:0}
+  .sess .name{font-weight:700;font-size:14px;word-break:break-all}
+  .sess .meta{font-size:12px;color:var(--muted);margin:2px 0 8px}
+  .btnrow{display:flex;gap:8px}.btnrow button{padding:10px;font-size:14px}
+  details summary{cursor:pointer;font-weight:700}
+  details p,details li{font-size:13px;color:var(--muted)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:700;background:var(--line)}
+</style>
+</head>
+<body>
+<main>
+  <h1>BikeSense Recorder</h1>
+  <p class="sub">Microphone sound features + accelerometer + gyroscope + GPS, logged to CSV. Raw audio is never stored.</p>
+
+  <div id="secureBanner" class="banner bad hidden">
+    This page is not running in a secure context (https). Phones block the microphone and motion sensors on plain http.
+    Host it on HTTPS (for example GitHub Pages or Netlify Drop) and open that link on the phone.
+  </div>
+  <div id="msgBanner" class="banner hidden"></div>
+
+  <!-- SETUP -->
+  <section id="setupCard" class="card">
+    <h2>1 · Session setup</h2>
+    <div class="row">
+      <div>
+        <label for="position">Mount position</label>
+        <select id="position">
+          <option value="handlebar">Handlebar</option>
+          <option value="frame">Frame (near seat)</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div>
+        <label for="phoneId">Phone label</label>
+        <input id="phoneId" type="text" placeholder="e.g. A" value="A">
+      </div>
+    </div>
+    <label for="forwardAxis">Which side of the phone points toward the front of the bike?
+      <span class="hint">Used to turn phone X/Y/Z into bike forward / sideways / vertical. The analysis page can also work this out from GPS.</span></label>
+    <select id="forwardAxis">
+      <option value="back">Back (camera) faces forward, screen faces the rider (usual handlebar mount)</option>
+      <option value="top">Top edge points forward (phone lying along the top tube)</option>
+      <option value="bottom">Bottom edge points forward</option>
+      <option value="screen">Screen faces forward</option>
+      <option value="right">Right edge points forward (landscape)</option>
+      <option value="left">Left edge points forward (landscape)</option>
+    </select>
+    <div class="row">
+      <div>
+        <label for="route">Route name</label>
+        <input id="route" type="text" placeholder="e.g. Campus-Dr-loop">
+      </div>
+      <div>
+        <label for="rider">Rider code <span class="hint">(initials, not a name)</span></label>
+        <input id="rider" type="text" placeholder="R1">
+      </div>
+    </div>
+    <label for="calOffset">Sound calibration offset (dB) <span class="hint">Added to the measured level. Find it by comparing against a sound level meter once; leave at 0 if you haven't.</span></label>
+    <input id="calOffset" type="number" step="0.1" value="0">
+    <label for="notes">Conditions / notes <span class="hint">weather, wind, time of day, mic covered by windscreen?</span></label>
+    <textarea id="notes" placeholder="Sunny, light wind, Fri 5pm, foam windscreen on mic"></textarea>
+    <div class="check"><input id="useMic" type="checkbox" checked><label for="useMic" style="margin:0">Record sound features (microphone)</label></div>
+    <div class="check"><input id="useGps" type="checkbox" checked><label for="useGps" style="margin:0">Record GPS (location + speed)</label></div>
+    <div style="height:8px"></div>
+    <button id="startBtn">Start recording</button>
+    <p class="hint" style="margin:8px 0 0">After you press Start, keep the bike <b>completely still for 3 seconds</b> so the phone can find "down". Then tap both phones' <b>Sync bump</b> button and knock the frame once, so the two recordings can be lined up.</p>
+  </section>
+
+  <!-- RECORDING -->
+  <section id="recCard" class="card hidden">
+    <div id="recStatus" class="status">Recording</div>
+    <div id="timer" class="bigtime">00:00</div>
+    <div class="grid" style="margin-top:8px">
+      <div class="tile"><div class="k">Sound level</div><div class="v"><span id="vDb">–</span> <span class="u">dB(A)*</span></div></div>
+      <div class="tile"><div class="k">Sound type (rough)</div><div class="v" style="font-size:18px" id="vClass">–</div></div>
+      <div class="tile"><div class="k">Speed</div><div class="v"><span id="vSpd">–</span> <span class="u">km/h</span></div></div>
+      <div class="tile"><div class="k">Forward accel</div><div class="v"><span id="vFwd">–</span> <span class="u">m/s²</span></div></div>
+      <div class="tile"><div class="k">Turn rate</div><div class="v"><span id="vYaw">–</span> <span class="u">°/s</span></div></div>
+      <div class="tile"><div class="k">Motion rate</div><div class="v"><span id="vHz">–</span> <span class="u">Hz</span></div></div>
+    </div>
+    <canvas id="cvDb"></canvas>
+    <canvas id="cvAcc"></canvas>
+    <p class="hint" style="margin:6px 0 0">Top: sound level, last 60 s. Bottom: forward (blue) and sideways (orange) acceleration, last 20 s. *dB(A) is relative unless you set a calibration offset.</p>
+
+    <div class="marks">
+      <button class="m-crowd" data-mark="crowd">👥 Crowd</button>
+      <button class="m-music" data-mark="music">🎵 Music</button>
+      <button class="m-traffic" data-mark="traffic">🚗 Traffic</button>
+      <button class="m-near" data-mark="near_miss">⚠️ Near-miss</button>
+      <button class="m-sync" data-mark="sync_bump">📍 Sync bump</button>
+      <button class="m-note" data-mark="note">✏️ Note</button>
+    </div>
+    <p class="hint" style="margin:6px 0 10px">Ground-truth markers: tap when you hear or see the thing (only when it is safe, e.g. at a stop). They are saved with a timestamp to events.csv.</p>
+    <button id="stopBtn" class="danger">Stop &amp; save</button>
+    <div id="log" class="log"></div>
+  </section>
+
+  <!-- SESSIONS -->
+  <section class="card">
+    <h2>2 · Saved sessions <span class="hint" style="text-transform:none;letter-spacing:0">(kept on this phone until you delete them)</span></h2>
+    <div id="sessList"><p class="hint">No sessions yet.</p></div>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>How to get good data</summary>
+      <ul>
+        <li><b>Keep the screen on and this tab in front.</b> Phones pause sensors when the screen locks or you switch apps. The page asks the phone to stay awake, but turn off auto-lock to be safe.</li>
+        <li><b>Mount rigidly.</b> A wobbly mount looks like road bumps. The handlebar phone turns when you steer, so the frame phone is the better source for braking and accelerating; the handlebar phone also picks up your steering.</li>
+        <li><b>Wind is the biggest sound problem.</b> At more than about 15 km/h, wind on the mic sounds loud and low-pitched. A small foam windscreen or a sock over the mic end helps a lot. Watch the "wind / low-freq" label.</li>
+        <li><b>Calibrate sound once.</b> Place the phone next to a sound level meter (or a calibrated meter app) in steady noise, then enter the difference as the offset.</li>
+        <li><b>Ground truth:</b> have a teammate film the ride with a third phone or action camera, or use the marker buttons at stops. You'll need it to check whether "voices-like" sound really means a crowd.</li>
+        <li><b>Privacy:</b> only sound <i>features</i> (levels, frequency balance, rhythm) are saved, once per second. No audio is recorded, so speech can't be played back. GPS can still reveal where riders live, so start and stop recording away from homes.</li>
+      </ul>
+    </details>
+  </section>
+</main>
+
+<script>
+'use strict';
+const APP_VERSION = '1.0.0';
+const $ = id => document.getElementById(id);
+const nowMs = () => performance.timeOrigin + performance.now();
+const rnd = (v, d=4) => (v == null || !isFinite(v)) ? '' : Math.round(v * 10**d) / 10**d;
+
+/* ---------------- tiny vector helpers ---------------- */
+const dot = (a,b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const norm = a => { const n = Math.hypot(a[0],a[1],a[2]) || 1; return [a[0]/n,a[1]/n,a[2]/n]; };
+const cross = (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const AXES = { top:[0,1,0], bottom:[0,-1,0], right:[1,0,0], left:[-1,0,0], screen:[0,0,1], back:[0,0,-1] };
+
+/* ---------------- IndexedDB autosave ---------------- */
+const DB = {
+  db: null,
+  open(){ return new Promise((res, rej) => {
+    const r = indexedDB.open('bikesense', 1);
+    r.onupgradeneeded = () => { const d = r.result;
+      d.createObjectStore('sessions', { keyPath: 'id' });
+      const c = d.createObjectStore('chunks', { autoIncrement: true }); c.createIndex('sid', 'sid'); };
+    r.onsuccess = () => { DB.db = r.result; res(); };
+    r.onerror = () => rej(r.error);
+  });},
+  tx(store, mode, fn){ return new Promise((res, rej) => {
+    const t = DB.db.transaction(store, mode); const s = t.objectStore(store); let out;
+    const r = fn(s); if (r) r.onsuccess = () => out = r.result;
+    t.oncomplete = () => res(out); t.onerror = () => rej(t.error);
+  });},
+  put(store, v){ return DB.tx(store, 'readwrite', s => s.put(v)); },
+  add(store, v){ return DB.tx(store, 'readwrite', s => s.add(v)); },
+  allSessions(){ return DB.tx('sessions', 'readonly', s => s.getAll()); },
+  chunks(sid){ return DB.tx('chunks', 'readonly', s => s.index('sid').getAll(sid)); },
+  async del(sid){
+    await DB.tx('sessions', 'readwrite', s => s.delete(sid));
+    await DB.tx('chunks', 'readwrite', s => { const idx = s.index('sid'); const r = idx.openCursor(IDBKeyRange.only(sid));
+      r.onsuccess = () => { const c = r.result; if (c) { c.delete(); c.continue(); } }; });
+  }
+};
+
+/* ---------------- state ---------------- */
+const S = {
+  rec: false, sid: null, meta: null, t0: 0,
+  buf: { motion: [], audio: [], gps: [], events: [] },     // rows waiting to be flushed to IndexedDB
+  count: { motion: 0, audio: 0, gps: 0, events: 0 },
+  calib: { samples: [], g: null, f: null, l: null, u: null, done: false, quality: null },
+  gravLP: null, lastSpeed: null, live: { fwd: 0, lat: 0, yaw: 0 },
+  hist: { db: [], acc: [] }, motionTimes: [], timers: [], wakeLock: null, gpsWatch: null,
+  audio: null
+};
+
+const HEAD = {
+  motion: ['t_epoch_ms','t_rel_s','acc_x','acc_y','acc_z','accg_x','accg_y','accg_z',
+           'rot_alpha_z_dps','rot_beta_x_dps','rot_gamma_y_dps','interval_ms','a_fwd','a_lat','a_vert','yaw_rate_dps'],
+  audio:  ['t_epoch_ms','t_rel_s','leq_dbfs','laeq_dbfs','laeq_cal_db','lmax_a_dbfs','l10_a_dbfs','l90_a_dbfs',
+           'low_db','speech_db','high_db','low_ratio','speech_ratio','high_ratio','centroid_hz','flatness',
+           'speech_mod_2_8hz','speech_mod_depth','rhythm','sound_class'],
+  gps:    ['t_epoch_ms','t_rel_s','lat','lon','accuracy_m','speed_mps','heading_deg','altitude_m'],
+  events: ['t_epoch_ms','t_rel_s','label','note']
+};
+
+function logLine(msg){ const el = $('log'); const d = new Date();
+  el.textContent = `${d.toTimeString().slice(0,8)}  ${msg}\n` + el.textContent; }
+function banner(msg, kind='warn'){ const b = $('msgBanner'); b.className = `banner ${kind}`; b.textContent = msg; b.classList.toggle('hidden', !msg); }
+
+/* ---------------- motion ---------------- */
+function onMotion(e){
+  if (!S.rec) return;
+  const t = nowMs();
+  const a = e.acceleration || {}, g = e.accelerationIncludingGravity || {}, r = e.rotationRate || {};
+  const gv = [g.x, g.y, g.z];
+  if (gv.some(v => v == null)) return;
+  S.motionTimes.push(t); if (S.motionTimes.length > 200) S.motionTimes.shift();
+
+  // gravity low-pass (fallback when the phone does not provide acceleration without gravity)
+  if (!S.gravLP) S.gravLP = gv.slice(); else for (let i=0;i<3;i++) S.gravLP[i] += 0.02*(gv[i]-S.gravLP[i]);
+  let lin = (a.x != null) ? [a.x, a.y, a.z] : [gv[0]-S.gravLP[0], gv[1]-S.gravLP[1], gv[2]-S.gravLP[2]];
+
+  // calibration: first 3 s, collect gravity
+  const C = S.calib;
+  if (!C.done){
+    C.samples.push(gv);
+    if (t - S.t0 > 3000) finishCalibration();
+  }
+  let fwd='', lat='', vert='', yaw='';
+  const w = [r.beta, r.gamma, r.alpha];           // rotation about phone x, y, z (deg/s)
+  if (C.done){
+    fwd = dot(lin, C.f); lat = dot(lin, C.l); vert = dot(lin, C.u);
+    if (w[0] != null) yaw = -dot(w, C.u);          // + = turning right (clockwise seen from above)
+    S.live.fwd = 0.85*S.live.fwd + 0.15*fwd; S.live.lat = 0.85*S.live.lat + 0.15*lat;
+    if (yaw !== '') S.live.yaw = 0.85*S.live.yaw + 0.15*yaw;
+  }
+  pushRow('motion', [rnd(t,1), rnd((t-S.t0)/1000,3), rnd(lin[0]), rnd(lin[1]), rnd(lin[2]), rnd(gv[0]), rnd(gv[1]), rnd(gv[2]),
+    rnd(r.alpha,3), rnd(r.beta,3), rnd(r.gamma,3), rnd(e.interval,2), rnd(fwd), rnd(lat), rnd(vert), rnd(yaw,3)]);
+}
+
+function finishCalibration(){
+  const C = S.calib, n = C.samples.length;
+  if (!n) return;
+  const mean = [0,0,0]; C.samples.forEach(s => { mean[0]+=s[0]; mean[1]+=s[1]; mean[2]+=s[2]; });
+  mean.forEach((v,i) => mean[i] = v/n);
+  // check stillness
+  let varSum = 0; C.samples.forEach(s => varSum += (s[0]-mean[0])**2 + (s[1]-mean[1])**2 + (s[2]-mean[2])**2);
+  const sd = Math.sqrt(varSum / n);
+  C.g = mean; C.u = norm(mean);
+  const f0 = AXES[S.meta.forward_axis];
+  const proj = [f0[0]-dot(f0,C.u)*C.u[0], f0[1]-dot(f0,C.u)*C.u[1], f0[2]-dot(f0,C.u)*C.u[2]];
+  C.quality = Math.hypot(...proj);
+  C.f = norm(proj); C.l = cross(C.f, C.u);      // lateral; sign is checked later against GPS in the analysis page
+  C.done = true; C.samples = [];
+  S.meta.calib_gravity = mean.map(v => rnd(v)); S.meta.calib_gravity_sd = rnd(sd);
+  S.meta.calib_up_unit = C.u.map(v => rnd(v)); S.meta.calib_forward_unit = C.f.map(v => rnd(v));
+  S.meta.calib_lateral_unit = C.l.map(v => rnd(v)); S.meta.forward_axis_quality = rnd(C.quality,3);
+  saveMeta();
+  addEvent('calibration_done', `g=${Math.hypot(...mean).toFixed(2)} sd=${sd.toFixed(3)} fq=${C.quality.toFixed(2)}`);
+  if (sd > 0.4) { banner('The bike moved during calibration, so "forward" may be off. The raw data is still fine, and the analysis page can recalibrate.', 'warn'); }
+  else if (C.quality < 0.5) { banner('The forward side you chose points mostly up or down. Pick a different option next time. The analysis page can still work it out from GPS.', 'warn'); }
+  else banner('');
+  logLine(`Calibrated. |g|=${Math.hypot(...mean).toFixed(2)} m/s², stillness sd=${sd.toFixed(3)}`);
+}
+
+/* ---------------- audio ---------------- */
+function aWeightDb(f){
+  const f2 = f*f;
+  const ra = (12194**2 * f2*f2) / ((f2 + 20.6**2) * Math.sqrt((f2 + 107.7**2)*(f2 + 737.9**2)) * (f2 + 12194**2));
+  return 20*Math.log10(ra) + 2.0;
+}
+async function startAudio(){
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+    echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+  const src = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0;
+  const HOP = 1024;
+  const proc = ctx.createScriptProcessor(HOP, 1, 1);
+  const mute = ctx.createGain(); mute.gain.value = 0;
+  src.connect(analyser); src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+
+  const N = analyser.frequencyBinCount, df = ctx.sampleRate / analyser.fftSize;
+  const A = { stream, ctx, src, analyser, proc, spec: new Float32Array(N), freq: new Float32Array(N), wA: new Float32Array(N),
+    fr: ctx.sampleRate / HOP, win: [], envSp: [], envE: [], lastEmit: nowMs() };
+  for (let i=0;i<N;i++){ const f = i*df; A.freq[i] = f; A.wA[i] = f >= 20 ? 10**(aWeightDb(f)/10) : 0; }
+  A.envMax = Math.round(A.fr * 6);
+  S.audio = A;
+  const tr = stream.getAudioTracks()[0];
+  S.meta.audio_sample_rate_hz = ctx.sampleRate; S.meta.audio_fft_size = analyser.fftSize; S.meta.audio_hop = HOP;
+  S.meta.audio_track_settings = JSON.stringify(tr.getSettings ? tr.getSettings() : {});
+  S.meta.audio_device_label = tr.label || '';
+  proc.onaudioprocess = ev => { if (S.rec) audioFrame(ev.inputBuffer.getChannelData(0)); };
+}
+
+function audioFrame(x){
+  const A = S.audio;
+  let s = 0; for (let i=0;i<x.length;i++) s += x[i]*x[i];
+  const ms = s / x.length + 1e-14;
+  A.analyser.getFloatFrequencyData(A.spec);
+  let pAll=0,pA=0,pL=0,pS=0,pH=0,cn=0,ln=0,pF=0,nF=0;
+  const spec = A.spec, fq = A.freq, wA = A.wA;
+  for (let i=1;i<spec.length;i++){
+    const f = fq[i]; if (f < 20) continue;
+    let d = spec[i]; if (!isFinite(d)) d = -200;
+    const p = 10**(d/10);
+    pAll += p; pA += p*wA[i]; cn += p*f;
+    if (f < 250) pL += p; else if (f >= 300 && f < 3400) pS += p; else if (f >= 3400 && f < 8000) pH += p;
+    if (f >= 100 && f < 8000){ ln += Math.log(p + 1e-30); pF += p; nF++; }
+  }
+  pAll += 1e-30;
+  const aRatio = pA / pAll;
+  const fr = { ms, msA: ms*aRatio, low: pL/pAll, sp: pS/pAll, hi: pH/pAll, cent: cn/pAll,
+               flat: nF ? Math.exp(ln/nF) / (pF/nF + 1e-30) : 0 };
+  A.win.push(fr);
+  A.envSp.push(Math.sqrt(ms * fr.sp)); A.envE.push(Math.log10(ms));
+  if (A.envSp.length > A.envMax){ A.envSp.shift(); A.envE.shift(); }
+  const t = nowMs();
+  if (t - A.lastEmit >= 1000){ A.lastEmit = t; emitAudioWindow(t); }
+}
+
+function pctl(arr, p){ const a = arr.slice().sort((x,y)=>x-y); return a[Math.min(a.length-1, Math.max(0, Math.round(p*(a.length-1))))]; }
+
+function emitAudioWindow(t){
+  const A = S.audio, W = A.win; A.win = [];
+  if (!W.length) return;
+  const mean = k => W.reduce((s,f)=>s+f[k],0)/W.length;
+  const db = v => 10*Math.log10(v + 1e-14);
+  const leq = db(mean('ms')), laeq = db(mean('msA'));
+  const frameA = W.map(f => db(f.msA));
+  const lmax = Math.max(...frameA), l10 = pctl(frameA, 0.9), l90 = pctl(frameA, 0.1);
+  const msMean = mean('ms');
+  const low = mean('low'), sp = mean('sp'), hi = mean('hi');
+  const cent = mean('cent'), flat = mean('flat');
+
+  // speech-rate modulation (syllables ≈ 2–8 Hz) of the speech-band envelope over the last 3 s
+  let mod = 0, depth = 0;
+  const n3 = Math.min(A.envSp.length, Math.round(A.fr*3));
+  if (n3 > 40){
+    const e = A.envSp.slice(-n3), m = e.reduce((a,b)=>a+b,0)/n3;
+    const xs = e.map(v => v - m);
+    depth = Math.sqrt(xs.reduce((a,b)=>a+b*b,0)/n3) / (m + 1e-12);
+    let inBand = 0, tot = 0;
+    for (let k=1;k<n3/2;k++){
+      const f = k*A.fr/n3; if (f < 0.5 || f > 20) continue;
+      let re=0, im=0; const w = 2*Math.PI*k/n3;
+      for (let i=0;i<n3;i++){ re += xs[i]*Math.cos(w*i); im -= xs[i]*Math.sin(w*i); }
+      const p = re*re + im*im; tot += p; if (f >= 2 && f <= 8) inBand += p;
+    }
+    mod = tot ? inBand/tot : 0;
+  }
+  // beat regularity: autocorrelation of onset strength at 60–200 BPM over last 6 s
+  let rhythm = 0;
+  if (A.envE.length > A.fr*3){
+    const E = A.envE, o = [];
+    for (let i=1;i<E.length;i++) o.push(Math.max(0, E[i]-E[i-1]));
+    const m = o.reduce((a,b)=>a+b,0)/o.length; const z = o.map(v => v-m); const n = z.length;
+    const r0 = z.reduce((a,b)=>a+b*b,0)/n;
+    if (r0 > 0){
+      for (let L=Math.round(0.3*A.fr); L<=Math.round(1.0*A.fr); L++){
+        let s=0; for (let i=0;i+L<n;i++) s += z[i]*z[i+L];
+        rhythm = Math.max(rhythm, (s/(n-L))/r0);
+      }
+    }
+  }
+  const cls = classifySound({ laeq, low, sp, flat, mod, rhythm });
+  const cal = laeq + (S.meta.cal_offset_db || 0);
+  pushRow('audio', [rnd(t,1), rnd((t-S.t0)/1000,3), rnd(leq,2), rnd(laeq,2), rnd(cal,2), rnd(lmax,2), rnd(l10,2), rnd(l90,2),
+    rnd(db(msMean*low),2), rnd(db(msMean*sp),2), rnd(db(msMean*hi),2), rnd(low,4), rnd(sp,4), rnd(hi,4),
+    rnd(cent,1), rnd(flat,4), rnd(mod,4), rnd(depth,4), rnd(rhythm,4), cls]);
+  S.hist.db.push([t, cal]); while (S.hist.db.length && t - S.hist.db[0][0] > 60000) S.hist.db.shift();
+  $('vDb').textContent = cal.toFixed(0); $('vClass').textContent = cls.replace('_',' ');
+}
+
+// Simple, transparent rule-based baseline. Thresholds can be re-tuned on the analysis page.
+function classifySound(f){
+  if (f.laeq < -65) return 'quiet';
+  if (f.low > 0.75) return 'wind_lowfreq';
+  if (f.rhythm > 0.35 && f.flat < 0.3) return 'music_like';
+  if (f.sp > 0.35 && f.mod > 0.3) return 'voices_like';
+  return 'mixed';
+}
+
+/* ---------------- GPS ---------------- */
+function startGps(){
+  if (!('geolocation' in navigator)) { logLine('No geolocation on this device'); return; }
+  S.gpsWatch = navigator.geolocation.watchPosition(p => {
+    if (!S.rec) return;
+    const c = p.coords, t = nowMs();
+    pushRow('gps', [rnd(t,1), rnd((t-S.t0)/1000,3), rnd(c.latitude,7), rnd(c.longitude,7), rnd(c.accuracy,1),
+      rnd(c.speed,3), rnd(c.heading,1), rnd(c.altitude,1)]);
+    S.lastSpeed = c.speed;
+    $('vSpd').textContent = c.speed != null ? (c.speed*3.6).toFixed(1) : '?';
+  }, err => logLine('GPS: ' + err.message), { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+}
+
+/* ---------------- rows / flush ---------------- */
+function pushRow(kind, row){ S.buf[kind].push(row); S.count[kind]++; }
+async function flush(){
+  if (!S.sid) return;
+  for (const k of Object.keys(S.buf)){
+    if (!S.buf[k].length) continue;
+    const rows = S.buf[k]; S.buf[k] = [];
+    try { await DB.add('chunks', { sid: S.sid, kind: k, rows }); }
+    catch (e){ S.buf[k] = rows.concat(S.buf[k]); logLine('Autosave failed: ' + e.message); }
+  }
+}
+function saveMeta(){ if (S.sid) return DB.put('sessions', { id: S.sid, meta: S.meta, count: S.count, updated: Date.now() }); }
+function addEvent(label, note=''){
+  if (!S.rec) return; const t = nowMs();
+  pushRow('events', [rnd(t,1), rnd((t-S.t0)/1000,3), label, note]);
+}
+
+/* ---------------- start / stop ---------------- */
+function fmtStamp(d){ const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; }
+const clean = s => (s||'').trim().replace(/[^A-Za-z0-9-]+/g,'-').replace(/^-+|-+$/g,'') || 'x';
+
+async function start(){
+  $('startBtn').disabled = true; banner('');
+  try {
+    // 1. motion permission (iOS needs this inside the tap)
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'){
+      const st = await DeviceMotionEvent.requestPermission();
+      if (st !== 'granted') throw new Error('Motion sensor permission was denied. On iPhone, go to Settings › Safari › Motion & Orientation Access.');
+    }
+    const d = new Date();
+    S.meta = {
+      app: 'BikeSense Recorder', app_version: APP_VERSION,
+      position: $('position').value, phone_id: $('phoneId').value.trim(), forward_axis: $('forwardAxis').value,
+      route: $('route').value.trim(), rider_code: $('rider').value.trim(), notes: $('notes').value.trim(),
+      cal_offset_db: parseFloat($('calOffset').value) || 0,
+      mic_enabled: $('useMic').checked, gps_enabled: $('useGps').checked,
+      start_local: d.toString(), start_iso: d.toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      user_agent: navigator.userAgent, screen: `${screen.width}x${screen.height}`,
+      units: 'accel m/s^2 (phone frame, x right, y top, z out of screen); rotation deg/s; sound dB re full scale (dBFS) unless calibrated; speed m/s',
+      sound_classes: 'rule baseline: quiet / wind_lowfreq / music_like / voices_like / mixed'
+    };
+    S.sid = `${clean(S.meta.route)}_${clean(S.meta.position)}-${clean(S.meta.phone_id)}_${fmtStamp(d)}`;
+    S.meta.session_id = S.sid;
+    S.t0 = nowMs(); S.meta.t0_epoch_ms = rnd(S.t0,1);
+    S.calib = { samples: [], g: null, f: null, l: null, u: null, done: false };
+    S.count = { motion: 0, audio: 0, gps: 0, events: 0 }; S.buf = { motion: [], audio: [], gps: [], events: [] };
+    S.hist = { db: [], acc: [] }; S.motionTimes = []; S.gravLP = null; S.live = { fwd:0, lat:0, yaw:0 };
+    $('log').textContent = '';
+    S.rec = true;
+    window.addEventListener('devicemotion', onMotion);
+    // 2. microphone
+    if (S.meta.mic_enabled){
+      try { await startAudio(); logLine(`Mic on, ${S.audio.ctx.sampleRate} Hz`); }
+      catch (e){ logLine('Mic failed: ' + e.message); banner('Microphone unavailable: ' + e.message, 'warn'); S.meta.mic_enabled = false; }
+    }
+    // 3. GPS
+    if (S.meta.gps_enabled) startGps();
+    // 4. keep screen awake
+    await requestWake();
+    await saveMeta();
+    addEvent('start', '');
+    $('setupCard').classList.add('hidden'); $('recCard').classList.remove('hidden');
+    S.timers.push(setInterval(flush, 4000));
+    S.timers.push(setInterval(() => saveMeta(), 15000));
+    S.timers.push(setInterval(uiTick, 250));
+    setTimeout(() => { if (S.rec && S.count.motion === 0) banner('No motion data is coming in. This browser or phone may not allow motion sensors here.', 'bad'); }, 2500);
+  } catch (e){
+    banner(e.message, 'bad'); $('startBtn').disabled = false; S.rec = false;
+  }
+}
+
+async function requestWake(){
+  try { if ('wakeLock' in navigator){ S.wakeLock = await navigator.wakeLock.request('screen'); logLine('Screen wake lock on'); } }
+  catch (e){ logLine('Wake lock unavailable. Turn off auto-lock.'); }
+}
+document.addEventListener('visibilitychange', () => {
+  if (!S.rec) return;
+  if (document.visibilityState === 'hidden') addEvent('app_hidden', 'sensors probably paused');
+  else { addEvent('app_visible', ''); requestWake(); }
+});
+
+async function stop(){
+  if (!S.rec || !S.meta) return;
+  S.rec = false;
+  window.removeEventListener('devicemotion', onMotion);
+  S.timers.forEach(clearInterval); S.timers = [];
+  if (S.gpsWatch != null) navigator.geolocation.clearWatch(S.gpsWatch); S.gpsWatch = null;
+  if (S.audio){ try { S.audio.proc.disconnect(); S.audio.stream.getTracks().forEach(t => t.stop()); await S.audio.ctx.close(); } catch(e){} S.audio = null; }
+  if (S.wakeLock){ try { await S.wakeLock.release(); } catch(e){} S.wakeLock = null; }
+  const t = nowMs();
+  S.buf.events.push([rnd(t,1), rnd((t-S.t0)/1000,3), 'stop', '']); S.count.events++;
+  S.meta.end_iso = new Date().toISOString(); S.meta.duration_s = rnd((t - S.t0)/1000, 1);
+  S.meta.motion_rate_hz = rnd(S.count.motion / ((t - S.t0)/1000), 1);
+  S.meta.rows = JSON.stringify(S.count);
+  await flush(); await saveMeta();
+  $('recCard').classList.add('hidden'); $('setupCard').classList.remove('hidden'); $('startBtn').disabled = false;
+  banner(`Saved ${S.sid}: ${S.count.motion} motion rows, ${S.count.audio} sound rows, ${S.count.gps} GPS fixes. Export it below.`, 'ok');
+  S.sid = null;
+  renderSessions();
+}
+
+/* ---------------- live UI ---------------- */
+function uiTick(){
+  const el = (nowMs() - S.t0)/1000, m = Math.floor(el/60), s = Math.floor(el%60);
+  $('timer').textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  $('recStatus').textContent = S.calib.done ? '● Recording' : 'Hold still, calibrating…';
+  $('recStatus').style.color = S.calib.done ? 'var(--bad)' : 'var(--warn)';
+  const mt = S.motionTimes;
+  if (mt.length > 10) $('vHz').textContent = ((mt.length-1) / ((mt[mt.length-1]-mt[0])/1000)).toFixed(0);
+  if (S.calib.done){
+    $('vFwd').textContent = S.live.fwd.toFixed(2); $('vYaw').textContent = S.live.yaw.toFixed(0);
+    const t = nowMs(); S.hist.acc.push([t, S.live.fwd, S.live.lat]);
+    while (S.hist.acc.length && t - S.hist.acc[0][0] > 20000) S.hist.acc.shift();
+  }
+  drawSpark($('cvDb'), S.hist.db.map(p=>[p[0],p[1]]), null, 60000, 'auto');
+  drawSpark($('cvAcc'), S.hist.acc.map(p=>[p[0],p[1]]), S.hist.acc.map(p=>[p[0],p[2]]), 20000, [-3,3]);
+}
+function drawSpark(cv, a, b, span, range){
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W*dpr){ cv.width = W*dpr; cv.height = H*dpr; }
+  const g = cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  if (!a.length) return;
+  const tEnd = nowMs(), tStart = tEnd - span;
+  let lo, hi;
+  if (range === 'auto'){ const v = a.map(p=>p[1]); lo = Math.min(...v)-3; hi = Math.max(...v)+3; } else [lo,hi] = range;
+  const X = t => (t - tStart)/span*W, Y = v => H - (Math.min(hi,Math.max(lo,v)) - lo)/(hi-lo)*H;
+  g.strokeStyle = 'rgba(128,128,128,.35)'; g.beginPath(); g.moveTo(0, Y((lo+hi)/2)); g.lineTo(W, Y((lo+hi)/2)); g.stroke();
+  const line = (pts, col) => { g.strokeStyle = col; g.lineWidth = 2; g.beginPath(); pts.forEach((p,i) => i ? g.lineTo(X(p[0]),Y(p[1])) : g.moveTo(X(p[0]),Y(p[1]))); g.stroke(); };
+  line(a, '#0b63ce'); if (b) line(b, '#e8710a');
+  g.fillStyle = 'rgba(128,128,128,.9)'; g.font = '11px -apple-system,sans-serif';
+  g.fillText(hi.toFixed(0), 4, 12); g.fillText(lo.toFixed(0), 4, H-4);
+}
+
+/* ---------------- export ---------------- */
+function csvCell(v){ if (v == null) return ''; const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s; }
+function toCsv(head, rows){ return head.join(',') + '\n' + rows.map(r => r.map(csvCell).join(',')).join('\n') + '\n'; }
+
+async function buildFiles(sid){
+  const sess = (await DB.allSessions()).find(s => s.id === sid);
+  const chunks = await DB.chunks(sid);
+  const rows = { motion: [], audio: [], gps: [], events: [] };
+  chunks.forEach(c => { for (const r of c.rows) rows[c.kind].push(r); });
+  for (const k in rows) rows[k].sort((a,b) => a[0]-b[0]);
+  const meta = Object.assign({}, sess ? sess.meta : { session_id: sid });
+  meta.rows_exported = JSON.stringify(Object.fromEntries(Object.entries(rows).map(([k,v]) => [k, v.length])));
+  meta.exported_iso = new Date().toISOString();
+  const metaCsv = 'key,value\n' + Object.entries(meta).map(([k,v]) => `${csvCell(k)},${csvCell(Array.isArray(v)? v.join(' '): v)}`).join('\n') + '\n';
+  return [
+    { name: `${sid}_metadata.csv`, text: metaCsv },
+    { name: `${sid}_metadata.json`, text: JSON.stringify(meta, null, 2) },
+    { name: `${sid}_motion.csv`, text: toCsv(HEAD.motion, rows.motion) },
+    { name: `${sid}_audio.csv`, text: toCsv(HEAD.audio, rows.audio) },
+    { name: `${sid}_gps.csv`, text: toCsv(HEAD.gps, rows.gps) },
+    { name: `${sid}_events.csv`, text: toCsv(HEAD.events, rows.events) }
+  ];
+}
+function download(blob, name){
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+async function zipSession(sid){
+  const files = await buildFiles(sid);
+  if (typeof JSZip === 'undefined'){ files.forEach(f => download(new Blob([f.text], {type:'text/csv'}), f.name)); return null; }
+  const z = new JSZip(); const folder = z.folder(sid);
+  files.forEach(f => folder.file(f.name, f.text));
+  return z.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+}
+async function exportZip(sid){
+  const blob = await zipSession(sid); if (blob) download(blob, `${sid}.zip`);
+  markExported(sid);
+}
+async function shareZip(sid){
+  try {
+    const blob = await zipSession(sid); if (!blob) return;
+    const file = new File([blob], `${sid}.zip`, { type: 'application/zip' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })){
+      await navigator.share({ files: [file], title: sid }); markExported(sid);
+    } else { download(blob, `${sid}.zip`); markExported(sid); }
+  } catch (e){ if (e.name !== 'AbortError') banner('Share failed: ' + e.message, 'warn'); }
+}
+async function markExported(sid){
+  const s = (await DB.allSessions()).find(x => x.id === sid); if (!s) return;
+  s.exported = Date.now(); await DB.put('sessions', s); renderSessions();
+}
+
+async function renderSessions(){
+  const list = (await DB.allSessions()).sort((a,b) => (b.updated||0) - (a.updated||0));
+  const el = $('sessList');
+  if (!list.length){ el.innerHTML = '<p class="hint">No sessions yet.</p>'; return; }
+  el.innerHTML = '';
+  list.forEach(s => {
+    const c = s.count || {}; const m = s.meta || {};
+    const div = document.createElement('div'); div.className = 'sess';
+    const live = S.rec && S.sid === s.id;
+    div.innerHTML = `<div class="name"></div>
+      <div class="meta">${m.start_local ? new Date(m.start_iso).toLocaleString() : ''} · ${m.duration_s ? (m.duration_s/60).toFixed(1)+' min' : (live ? 'recording' : 'not stopped cleanly; data recovered')}
+      · ${c.motion||0} motion · ${c.audio||0} sound · ${c.gps||0} GPS ${s.exported ? '<span class="pill">exported</span>' : ''}</div>
+      <div class="btnrow"><button data-a="zip">Download ZIP</button><button class="secondary" data-a="share">Share…</button><button class="secondary" data-a="del" style="flex:.6">Delete</button></div>`;
+    div.querySelector('.name').textContent = s.id;
+    div.querySelectorAll('button').forEach(b => { b.disabled = live; b.onclick = async () => {
+      if (b.dataset.a === 'zip') exportZip(s.id);
+      if (b.dataset.a === 'share') shareZip(s.id);
+      if (b.dataset.a === 'del'){
+        if (!s.exported && !confirm('This session has not been exported yet. Delete it permanently?')) return;
+        if (s.exported && !confirm('Delete this session from the phone?')) return;
+        await DB.del(s.id); renderSessions();
+      }
+    };});
+    el.appendChild(div);
+  });
+}
+
+/* ---------------- wire up ---------------- */
+$('startBtn').onclick = start;
+$('stopBtn').onclick = () => { if (confirm('Stop recording?')) stop(); };
+document.querySelectorAll('[data-mark]').forEach(b => b.onclick = () => {
+  let note = '';
+  if (b.dataset.mark === 'note') { note = prompt('Note:') || ''; }
+  addEvent(b.dataset.mark, note); logLine('Marker: ' + b.dataset.mark);
+  b.animate([{ transform: 'scale(.94)' }, { transform: 'scale(1)' }], { duration: 180 });
+  if (navigator.vibrate) navigator.vibrate(40);
+});
+$('position').onchange = () => { $('forwardAxis').value = $('position').value === 'frame' ? 'top' : 'back'; };
+window.addEventListener('beforeunload', e => { if (S.rec){ flush(); e.preventDefault(); e.returnValue = ''; } });
+
+// restore last-used setup values (per phone convenience)
+const SETUP_KEYS = ['position','phoneId','forwardAxis','route','rider','calOffset'];
+try { const sv = JSON.parse(localStorage.getItem('bikesense_setup') || '{}'); SETUP_KEYS.forEach(k => { if (sv[k] != null) $(k).value = sv[k]; }); } catch(e){}
+SETUP_KEYS.forEach(k => $(k).addEventListener('change', () => { try {
+  localStorage.setItem('bikesense_setup', JSON.stringify(Object.fromEntries(SETUP_KEYS.map(x => [x, $(x).value])))); } catch(e){} }));
+
+if (!window.isSecureContext) $('secureBanner').classList.remove('hidden');
+DB.open().then(renderSessions).catch(e => banner('Storage unavailable (private browsing?): ' + e.message + '. Data will be lost if the page reloads.', 'bad'));
+</script>
+</body>
+</html>

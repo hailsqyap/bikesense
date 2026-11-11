@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BikeSense Analysis</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root{ --bg:#f4f5f7; --card:#fff; --ink:#0f172a; --muted:#5b6475; --line:#d9dde4; --accent:#0b63ce;
+         --ok:#14804a; --warn:#b45309; --bad:#c0262d; }
+  @media (prefers-color-scheme: dark){ :root{ --bg:#0b0f17; --card:#151b26; --ink:#eef2f7; --muted:#9aa4b5; --line:#2a3342; --accent:#5aa2ff; } }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  main{max-width:1200px;margin:0 auto;padding:16px}
+  h1{font-size:22px;margin:4px 0}
+  .sub{color:var(--muted);margin:0 0 14px;font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:0 0 14px}
+  .card h2{font-size:16px;margin:0 0 10px}
+  .muted{color:var(--muted);font-size:13px}
+  button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:9px 14px;background:var(--accent);color:#fff;cursor:pointer}
+  button.secondary{background:transparent;color:var(--accent);border:1.5px solid var(--accent)}
+  .drop{border:2px dashed var(--line);border-radius:12px;padding:22px;text-align:center}
+  .drop.over{border-color:var(--accent);background:rgba(11,99,206,.06)}
+  .flex{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--card)}
+  .tablewrap{max-height:340px;overflow:auto}
+  .settings{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px 18px}
+  .settings label{font-size:12.5px;font-weight:600;display:block}
+  .settings .h{font-weight:400;color:var(--muted);font-size:11.5px;display:block}
+  .settings input,.settings select{width:100%;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font-size:14px}
+  .group{grid-column:1/-1;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:8px;border-top:1px solid var(--line);padding-top:10px}
+  .plot{width:100%;height:340px}
+  #map{height:460px;border-radius:12px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+  .tile{border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .tile .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  .tile .v{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums}
+  .tile .n{font-size:12px;color:var(--muted)}
+  .good{color:var(--ok)} .meh{color:var(--warn)} .badc{color:var(--bad)}
+  .hidden{display:none!important}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin-top:8px}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+  input[type=number].off{width:90px}
+  details>summary{cursor:pointer;font-weight:700}
+</style>
+</head>
+<body>
+<main>
+  <h1>BikeSense Analysis</h1>
+  <p class="sub">Load the ZIP or CSV files exported from the phones. Everything runs in this browser and nothing is uploaded. Settings changes recompute every chart and table.</p>
+
+  <section class="card">
+    <div id="drop" class="drop">
+      <p style="margin:0 0 10px"><b>Drop ZIP / CSV files here</b> (one or both phones, any number of rides)</p>
+      <div class="flex" style="justify-content:center">
+        <input id="fileIn" type="file" multiple accept=".zip,.csv,.json">
+        <button id="demoBtn" class="secondary">Load demo data (2 phones, 10 min)</button>
+      </div>
+    </div>
+    <div id="sessBox" class="hidden" style="margin-top:14px">
+      <h2>Loaded sessions</h2>
+      <div class="tablewrap" style="max-height:none"><table id="sessTable"></table></div>
+      <div class="flex" style="margin-top:8px">
+        <button id="alignBtn" class="secondary">Auto-align clocks (sync bump)</button>
+        <span class="muted" id="alignMsg"></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="card hidden" id="setCard">
+    <details>
+      <summary>Analysis settings (thresholds)</summary>
+      <p class="muted">Every threshold here is a choice you should justify and test. Course checklist question 3 asks whether a reasonable parameter change would change your answer, so try a few values and record what happens. The settings you used are saved in the export.</p>
+      <div id="settings" class="settings"></div>
+      <div class="flex" style="margin-top:12px"><button id="resetSet" class="secondary">Reset to defaults</button></div>
+    </details>
+  </section>
+
+  <div id="results" class="hidden">
+    <section class="card">
+      <h2>Data quality &amp; cross-checks</h2>
+      <p class="muted">Independent checks: GPS speed changes vs. accelerometer, GPS heading vs. gyroscope, GPS stops vs. vibration stops. Correlations near +1 mean the two sensors agree.</p>
+      <div id="qc"></div>
+    </section>
+
+    <section class="card"><h2>Sound level</h2><div id="pLevel" class="plot"></div>
+      <div class="legend" id="classLegend"></div></section>
+    <section class="card"><h2>Sound features (crowd vs. music vs. wind)</h2>
+      <p class="muted">Speech-band ratio and 2–8 Hz modulation high → voices. Rhythm high with low flatness → music with a beat. Low-frequency ratio high → wind or engines.</p>
+      <div id="pFeat" class="plot"></div></section>
+    <section class="card"><h2>Stopping &amp; starting (forward acceleration)</h2>
+      <p class="muted">Accelerometer forward acceleration (smoothed) vs. acceleration worked out from GPS speed. Grey bands are stops; red triangles are hard braking; green are hard starts.</p>
+      <div id="pFwd" class="plot"></div></section>
+    <section class="card"><h2>Turns (gyroscope yaw rate &amp; sideways acceleration)</h2>
+      <p class="muted">Positive = turning right. Blue diamonds are detected turns.</p>
+      <div id="pTurn" class="plot"></div></section>
+    <section class="card"><h2>Vertical vibration (road roughness, accelerometer-only stop detection)</h2>
+      <p class="muted">Phone Z is mostly up/down. Its vibration shows road roughness, and when it drops below the threshold the bike is probably stopped. This is a GPS-free baseline.</p>
+      <div id="pVib" class="plot"></div></section>
+
+    <section class="card">
+      <h2>Map</h2>
+      <div class="flex" style="margin-bottom:8px">
+        <label class="muted">Colour by
+          <select id="mapMetric">
+            <option value="busy">Busyness score (segment)</option>
+            <option value="db">Sound level dB(A)</option>
+            <option value="voices">% voices-like (segment)</option>
+            <option value="speed">Speed</option>
+          </select></label>
+        <label class="muted">Session <select id="mapSess"></select></label>
+      </div>
+      <div id="map"></div>
+      <div class="legend" id="mapLegend"></div>
+    </section>
+
+    <section class="card"><h2>Route segments</h2>
+      <p class="muted">Busyness score = weighted mix of normalised noise, % voices-like seconds, stops per minute and hard brakes per minute. The weights are in the settings. Music-like sound is reported but not counted as crowding.</p>
+      <div class="tablewrap"><table id="segTable"></table></div></section>
+
+    <section class="card"><h2>Ground-truth check (your marker buttons vs. the detector)</h2>
+      <div id="gtSummary" class="tiles" style="margin-bottom:10px"></div>
+      <div class="tablewrap"><table id="gtTable"></table></div></section>
+
+    <section class="card"><h2>Detected events</h2>
+      <div class="tablewrap"><table id="evTable"></table></div></section>
+
+    <section class="card"><h2>Export</h2>
+      <p class="muted">Raw files are never changed. Exports are new derived files plus the exact settings used. Use the camera icon on any chart to save it as a PNG.</p>
+      <div class="flex"><button id="expZip">Download all results (ZIP)</button><button id="expSummary" class="secondary">1 Hz summary CSV</button>
+        <button id="expEvents" class="secondary">Events CSV</button><button id="expSeg" class="secondary">Segments CSV</button></div>
+    </section>
+  </div>
+</main>
+
+<script>
+'use strict';
+const ANALYSIS_VERSION = '1.0.0';
+const $ = id => document.getElementById(id);
+const isNum = v => typeof v === 'number' && isFinite(v);
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+const SESS_COLORS = ['#0b63ce','#e8710a','#14804a','#9333ea','#c0262d','#0891b2'];
+const CLASS_COLORS = { voices_like:'#7c3aed', music_like:'#db2777', wind_lowfreq:'#64748b', quiet:'#22c55e', mixed:'#f59e0b' };
+const AXES = { top:[0,1,0], bottom:[0,-1,0], right:[1,0,0], left:[-1,0,0], screen:[0,0,1], back:[0,0,-1] };
+const dot = (a,b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const vnorm = a => { const n = Math.hypot(...a) || 1; return a.map(v => v/n); };
+const cross = (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const r = (v, d=3) => isNum(v) ? Math.round(v*10**d)/10**d : '';
+
+/* ======================= settings ======================= */
+const SPEC = [
+  ['g','Orientation & calibration'],
+  ['calibMode','Find "down" from','select',['start','still'],'start','start = first N seconds after Start (your protocol); still = the stillest N-second stretch of the ride'],
+  ['calibSec','Calibration window (s)','number',3,''],
+  ['axisMode','Forward direction','select',['auto','meta'],'auto','auto = fit to GPS speed changes; meta = the side chosen on the phone'],
+  ['autoSign','Auto-fix signs using GPS','select',['yes','no'],'yes','flips forward, turn and sideways signs if they disagree with GPS'],
+  ['smoothSec','Accel smoothing window (s)','number',0.5,'moving average applied before detecting events'],
+  ['gpsMaxAcc','Ignore GPS fixes worse than (m)','number',30,''],
+  ['g','Stopping & starting'],
+  ['stopSpeed','Stopped if GPS speed below (m/s)','number',1.0,''],
+  ['stopMinDur','Minimum stop length (s)','number',2,''],
+  ['vibThr','Vibration-stop threshold (m/s² RMS)','number',0.35,'accelerometer-only stop baseline'],
+  ['brakeThr','Hard brake: decel above (m/s²)','number',1.5,''],
+  ['accelThr','Hard start: accel above (m/s²)','number',1.0,''],
+  ['minEvtDur','Minimum brake/start length (s)','number',0.3,''],
+  ['g','Turns'],
+  ['turnRate','Turn: yaw rate above (°/s)','number',15,''],
+  ['turnMinAngle','Turn: total angle at least (°)','number',30,''],
+  ['g','Sound classification (rule baseline)'],
+  ['quietDb','Quiet if LAeq below (dBFS)','number',-65,'uncalibrated scale'],
+  ['windLow','Wind/low-freq if low-band ratio above','number',0.75,''],
+  ['musicRhythm','Music if rhythm above','number',0.35,''],
+  ['musicFlat','…and flatness below','number',0.3,''],
+  ['voiceSpeech','Voices if speech-band ratio above','number',0.35,''],
+  ['voiceMod','…and 2–8 Hz modulation above','number',0.3,''],
+  ['gtWindow','Ground-truth match window (± s)','number',5,''],
+  ['g','Segments & busyness score'],
+  ['segMode','Segment by','select',['distance','time'],'distance','time is used automatically if there is no GPS'],
+  ['segLen','Segment length (m)','number',100,''],
+  ['segSec','Segment length (s)','number',30,''],
+  ['noiseLo','Noise score 0 at (dB, calibrated scale)','number',-60,'use e.g. 50 once you have a dBA calibration offset'],
+  ['noiseHi','Noise score 1 at (dB)','number',-25,'e.g. 80 when calibrated'],
+  ['wNoise','Weight: noise','number',0.3,''],
+  ['wVoices','Weight: % voices','number',0.3,''],
+  ['wStops','Weight: stops/min','number',0.2,''],
+  ['wBrakes','Weight: hard brakes/min','number',0.2,'']
+];
+const DEFAULTS = Object.fromEntries(SPEC.filter(s => s[0] !== 'g').map(s => [s[0], s[2]==='select' ? s[4] : s[3]]));
+let P = { ...DEFAULTS };
+try { Object.assign(P, JSON.parse(localStorage.getItem('bikesense_analysis_settings') || '{}')); } catch(e){}
+
+function buildSettings(){
+  const box = $('settings'); box.innerHTML = '';
+  SPEC.forEach(s => {
+    if (s[0] === 'g'){ const d = document.createElement('div'); d.className = 'group'; d.textContent = s[1]; box.appendChild(d); return; }
+    const [key, label, type, a, b, c] = s;
+    const help = type === 'select' ? c : b;
+    const w = document.createElement('div');
+    const inp = type === 'select'
+      ? `<select data-k="${key}">${a.map(o => `<option ${P[key]===o?'selected':''}>${o}</option>`).join('')}</select>`
+      : `<input data-k="${key}" type="number" step="any" value="${P[key]}">`;
+    w.innerHTML = `<label>${label}${help ? `<span class="h">${help}</span>` : ''}</label>${inp}`;
+    box.appendChild(w);
+  });
+  box.querySelectorAll('[data-k]').forEach(el => el.addEventListener('change', () => {
+    const k = el.dataset.k; P[k] = el.tagName === 'SELECT' ? el.value : parseFloat(el.value);
+    try { localStorage.setItem('bikesense_analysis_settings', JSON.stringify(P)); } catch(e){}
+    runAll();
+  }));
+}
+$('resetSet').onclick = () => { P = { ...DEFAULTS }; try { localStorage.removeItem('bikesense_analysis_settings'); } catch(e){} buildSettings(); runAll(); };
+
+/* ======================= loading ======================= */
+const ST = { sessions: new Map(), results: new Map(), map: null, mapLayers: null };
+
+function parseCSV(text){
+  const rows = []; let row = [], f = '', q = false;
+  for (let i=0;i<text.length;i++){
+    const c = text[i];
+    if (q){ if (c === '"'){ if (text[i+1] === '"'){ f += '"'; i++; } else q = false; } else f += c; }
+    else if (c === '"') q = true;
+    else if (c === ','){ row.push(f); f = ''; }
+    else if (c === '\n' || c === '\r'){ if (c === '\r' && text[i+1] === '\n') i++; row.push(f); rows.push(row); row = []; f = ''; }
+    else f += c;
+  }
+  if (f !== '' || row.length){ row.push(f); rows.push(row); }
+  const head = rows.shift() || [];
+  const body = rows.filter(r => r.length > 1 || (r.length === 1 && r[0] !== ''));
+  const cols = {};
+  head.forEach((h, j) => {
+    const raw = body.map(r => r[j] ?? '');
+    const numeric = raw.every(v => v === '' || !isNaN(+v));
+    cols[h] = numeric ? raw.map(v => v === '' ? NaN : +v) : raw;
+  });
+  return { head, cols, n: body.length };
+}
+
+function ingest(name, text){
+  const base = name.split('/').pop();
+  const m = base.match(/^(.*)_(motion|audio|gps|events|metadata)\.(csv|json)$/);
+  if (!m) return;
+  const [, sid, kind, ext] = m;
+  if (!ST.sessions.has(sid)) ST.sessions.set(sid, { sid, offsetS: 0, include: true });
+  const s = ST.sessions.get(sid);
+  if (kind === 'metadata'){
+    if (ext === 'json'){ try { s.meta = JSON.parse(text); } catch(e){} }
+    else if (!s.meta){ const p = parseCSV(text); s.meta = {}; (p.cols.key||[]).forEach((k,i) => s.meta[k] = p.cols.value[i]); }
+  } else if (ext === 'csv') s[kind] = parseCSV(text);
+}
+
+async function loadFiles(files){
+  for (const file of files){
+    if (/\.zip$/i.test(file.name)){
+      const z = await JSZip.loadAsync(file);
+      const entries = Object.values(z.files).filter(f => !f.dir);
+      for (const e of entries) ingest(e.name, await e.async('string'));
+    } else ingest(file.name, await file.text());
+  }
+  afterLoad();
+}
+function afterLoad(){
+  if (!ST.sessions.size){ alert('No BikeSense files found. Expected names like <session>_motion.csv.'); return; }
+  $('sessBox').classList.remove('hidden'); $('setCard').classList.remove('hidden'); $('results').classList.remove('hidden');
+  renderSessTable(); runAll();
+}
+$('fileIn').onchange = e => loadFiles([...e.target.files]);
+const drop = $('drop');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); loadFiles([...e.dataTransfer.files]); });
+
+function renderSessTable(){
+  const t = $('sessTable');
+  t.innerHTML = '<tr><th>Use</th><th>Session</th><th>Position</th><th>Rows (motion / sound / GPS / events)</th><th>Clock offset (s)</th><th>Notes</th></tr>';
+  [...ST.sessions.values()].forEach((s, i) => {
+    const tr = document.createElement('tr'); const m = s.meta || {};
+    tr.innerHTML = `<td><input type="checkbox" ${s.include?'checked':''}></td>
+      <td><span class="sw" style="background:${SESS_COLORS[i%SESS_COLORS.length]}"></span> <b></b></td>
+      <td>${esc(m.position||'?')} · axis ${esc(m.forward_axis||'?')}</td>
+      <td>${s.motion?.n||0} / ${s.audio?.n||0} / ${s.gps?.n||0} / ${s.events?.n||0}</td>
+      <td><input class="off" type="number" step="0.05" value="${s.offsetS}"></td><td class="muted"></td>`;
+    tr.querySelector('b').textContent = s.sid; tr.cells[5].textContent = m.notes || '';
+    tr.querySelector('input[type=checkbox]').onchange = e => { s.include = e.target.checked; runAll(); };
+    tr.querySelector('.off').onchange = e => { s.offsetS = parseFloat(e.target.value) || 0; runAll(); };
+    t.appendChild(tr);
+  });
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ======================= numeric helpers ======================= */
+function movAvg(a, w){
+  w = Math.max(1, Math.round(w)); if (w === 1) return a.slice();
+  const h = Math.floor(w/2), out = new Array(a.length);
+  let s = 0, n = 0;
+  for (let i=0;i<Math.min(h, a.length);i++) if (isNum(a[i])){ s += a[i]; n++; }
+  for (let i=0;i<a.length;i++){
+    const add = i + h, rem = i - h - 1;
+    if (add < a.length && isNum(a[add])){ s += a[add]; n++; }
+    if (rem >= 0 && isNum(a[rem])){ s -= a[rem]; n--; }
+    out[i] = n ? s/n : NaN;
+  }
+  return out;
+}
+function interp(tx, vx, tq){
+  const out = new Array(tq.length).fill(NaN); if (tx.length < 2) return out;
+  let j = 0;
+  for (let i=0;i<tq.length;i++){
+    const t = tq[i]; if (t < tx[0] || t > tx[tx.length-1]) continue;
+    while (j < tx.length-2 && tx[j+1] < t) j++;
+    const t0 = tx[j], t1 = tx[j+1], v0 = vx[j], v1 = vx[j+1];
+    if (!isNum(v0) || !isNum(v1)) continue;
+    if (t1 - t0 > 5000) continue; // don't bridge gaps > 5 s
+    out[i] = t1 === t0 ? v0 : v0 + (v1 - v0) * (t - t0) / (t1 - t0);
+  }
+  return out;
+}
+function corr(a, b){
+  let n=0, sa=0, sb=0, saa=0, sbb=0, sab=0;
+  for (let i=0;i<a.length;i++){ const x=a[i], y=b[i]; if (!isNum(x)||!isNum(y)) continue;
+    n++; sa+=x; sb+=y; saa+=x*x; sbb+=y*y; sab+=x*y; }
+  if (n < 10) return { r: NaN, n };
+  const cov = sab/n - sa/n*sb/n, va = saa/n - (sa/n)**2, vb = sbb/n - (sb/n)**2;
+  return { r: cov / Math.sqrt(va*vb || 1e-12), n };
+}
+function runs(flags){ const out = []; let s = -1;
+  for (let i=0;i<=flags.length;i++){ const f = i < flags.length && flags[i];
+    if (f && s < 0) s = i; if (!f && s >= 0){ out.push([s, i-1]); s = -1; } }
+  return out; }
+function haversine(la1, lo1, la2, lo2){ const R = 6371000, d = Math.PI/180;
+  const a = Math.sin((la2-la1)*d/2)**2 + Math.cos(la1*d)*Math.cos(la2*d)*Math.sin((lo2-lo1)*d/2)**2;
+  return 2*R*Math.asin(Math.sqrt(a)); }
+function bearing(la1, lo1, la2, lo2){ const d = Math.PI/180;
+  const y = Math.sin((lo2-lo1)*d)*Math.cos(la2*d), x = Math.cos(la1*d)*Math.sin(la2*d) - Math.sin(la1*d)*Math.cos(la2*d)*Math.cos((lo2-lo1)*d);
+  return (Math.atan2(y, x)/d + 360) % 360; }
+function pctl(a, p){ const v = a.filter(isNum).sort((x,y)=>x-y); if (!v.length) return NaN; return v[Math.min(v.length-1, Math.round(p*(v.length-1)))]; }
+const meanOf = a => { const v = a.filter(isNum); return v.length ? v.reduce((x,y)=>x+y,0)/v.length : NaN; };
+const energyMean = a => { const v = a.filter(isNum); return v.length ? 10*Math.log10(v.reduce((s,x)=>s+10**(x/10),0)/v.length) : NaN; };
+const clamp01 = x => Math.max(0, Math.min(1, x));
+
+function classify(row){
+  if (!isNum(row.laeq)) return '';
+  if (row.laeq < P.quietDb) return 'quiet';
+  if (row.low > P.windLow) return 'wind_lowfreq';
+  if (row.rhythm > P.musicRhythm && row.flat < P.musicFlat) return 'music_like';
+  if (row.sp > P.voiceSpeech && row.mod > P.voiceMod) return 'voices_like';
+  return 'mixed';
+}
+
+/* ======================= per-session processing ======================= */
+function processSession(s){
+  const R = { sid: s.sid, meta: s.meta || {}, warn: [], checks: {}, events: [] };
+  const off = (s.offsetS || 0) * 1000;
+  const DT = 50;                       // 20 Hz analysis grid
+
+  /* ---- GPS ---- */
+  let gps = null;
+  if (s.gps && s.gps.n > 3){
+    const c = s.gps.cols, idx = [];
+    for (let i=0;i<s.gps.n;i++) if (isNum(c.lat[i]) && isNum(c.lon[i]) && (!isNum(c.accuracy_m[i]) || c.accuracy_m[i] <= P.gpsMaxAcc)) idx.push(i);
+    if (idx.length > 3){
+      const t = idx.map(i => c.t_epoch_ms[i] + off), lat = idx.map(i => c.lat[i]), lon = idx.map(i => c.lon[i]);
+      const dist = [0]; for (let k=1;k<t.length;k++) dist.push(dist[k-1] + haversine(lat[k-1],lon[k-1],lat[k],lon[k]));
+      const spd = idx.map((i,k) => {
+        if (isNum(c.speed_mps[i]) && c.speed_mps[i] >= 0) return c.speed_mps[i];
+        if (k === 0) return NaN; const dt = (t[k]-t[k-1])/1000; return dt > 0 ? (dist[k]-dist[k-1])/dt : NaN; });
+      gps = { t, lat, lon, dist, spd: movAvg(spd, 3) };
+      R.checks.gpsFixes = t.length; R.checks.gpsRejected = s.gps.n - t.length;
+      R.checks.gpsMedianAcc = pctl(idx.map(i => c.accuracy_m[i]), 0.5);
+    } else R.warn.push('GPS present but too few accurate fixes.');
+  }
+
+  /* ---- Motion → 20 Hz grid ---- */
+  if (!s.motion || s.motion.n < 50){ R.warn.push('No motion data.'); return finishAudioOnly(s, R, gps, off); }
+  const M = s.motion.cols, nM = s.motion.n;
+  const tm = M.t_epoch_ms.map(v => v + off);
+  const tA = tm[0], tB = tm[nM-1], nb = Math.max(1, Math.ceil((tB - tA) / DT));
+  const F = ['acc_x','acc_y','acc_z','accg_x','accg_y','accg_z','rot_beta_x_dps','rot_gamma_y_dps','rot_alpha_z_dps'];
+  const sum = F.map(() => new Float64Array(nb)), cnt = F.map(() => new Uint16Array(nb));
+  for (let i=0;i<nM;i++){
+    const b = Math.min(nb-1, Math.floor((tm[i]-tA)/DT));
+    F.forEach((f, j) => { const v = M[f] ? M[f][i] : NaN; if (isNum(v)){ sum[j][b] += v; cnt[j][b]++; } });
+  }
+  const G = F.map((f, j) => Array.from(sum[j], (v, b) => cnt[j][b] ? v/cnt[j][b] : NaN));
+  const tg = Array.from({length: nb}, (_, b) => tA + (b + 0.5) * DT);
+  const hasGyro = G[6].some(isNum);
+  R.checks.motionHz = nM / ((tB - tA)/1000);
+  let gaps = 0, maxGap = 0; for (let i=1;i<nM;i++){ const d = tm[i]-tm[i-1]; if (d > 1000){ gaps++; maxGap = Math.max(maxGap, d); } }
+  R.checks.gaps = gaps; R.checks.maxGapS = maxGap/1000;
+  if (gaps) R.warn.push(`${gaps} motion gap(s) longer than 1 s (longest ${(maxGap/1000).toFixed(1)} s). The screen probably locked or the app was in the background.`);
+
+  /* ---- calibration: gravity direction ---- */
+  const nCal = Math.max(5, Math.round(P.calibSec * 1000 / DT));
+  let c0 = 0;
+  if (P.calibMode === 'still'){
+    let best = Infinity;
+    for (let b=0; b+nCal < nb; b += 5){
+      let v = 0, n = 0, m = [0,0,0];
+      for (let k=b;k<b+nCal;k++){ if (isNum(G[3][k])){ m[0]+=G[3][k]; m[1]+=G[4][k]; m[2]+=G[5][k]; n++; } }
+      if (n < nCal*0.8) continue; m = m.map(x => x/n);
+      for (let k=b;k<b+nCal;k++) if (isNum(G[3][k])) v += (G[3][k]-m[0])**2 + (G[4][k]-m[1])**2 + (G[5][k]-m[2])**2;
+      if (v/n < best){ best = v/n; c0 = b; }
+    }
+  }
+  const gm = [0,0,0]; let gn = 0, gv = 0;
+  for (let k=c0;k<Math.min(nb, c0+nCal);k++) if (isNum(G[3][k])){ gm[0]+=G[3][k]; gm[1]+=G[4][k]; gm[2]+=G[5][k]; gn++; }
+  gm.forEach((v,i) => gm[i] = v/(gn||1));
+  for (let k=c0;k<Math.min(nb, c0+nCal);k++) if (isNum(G[3][k])) gv += (G[3][k]-gm[0])**2 + (G[4][k]-gm[1])**2 + (G[5][k]-gm[2])**2;
+  const u = vnorm(gm);
+  R.checks.gravityMag = Math.hypot(...gm); R.checks.calibSd = Math.sqrt(gv/(gn||1)); R.checks.calibAt = (tg[c0]-tA)/1000;
+  if (R.checks.calibSd > 0.3) R.warn.push(`The bike was not still during calibration (sd ${R.checks.calibSd.toFixed(2)} m/s²). Try "still" mode.`);
+
+  // horizontal basis: h1 from metadata axis projected onto horizontal plane; h2 = right of h1
+  let f0 = AXES[R.meta.forward_axis] || AXES.top;
+  const projH = a => { const d = dot(a,u); return [a[0]-d*u[0], a[1]-d*u[1], a[2]-d*u[2]]; };
+  if (Math.hypot(...projH(f0)) < 0.35){
+    R.warn.push('The forward axis from the phone setup is nearly vertical, so the most horizontal phone axis was used instead.');
+    f0 = Object.values(AXES).sort((a,b) => Math.abs(dot(a,u)) - Math.abs(dot(b,u)))[0];
+  }
+  const h1 = vnorm(projH(f0)), h2 = cross(h1, u);
+  const a1 = new Array(nb), a2 = new Array(nb), vert = new Array(nb), yawRaw = new Array(nb);
+  for (let b=0;b<nb;b++){
+    const lin = [G[0][b], G[1][b], G[2][b]];
+    a1[b] = dot(lin, h1); a2[b] = dot(lin, h2); vert[b] = dot(lin, u);
+    yawRaw[b] = hasGyro ? -dot([G[6][b], G[7][b], G[8][b]], u) : NaN;   // right turn positive (clockwise seen from above)
+  }
+
+  /* ---- 1 Hz grid ---- */
+  const s0 = Math.ceil(tA/1000)*1000, n1 = Math.max(0, Math.floor((tB - s0)/1000));
+  const t1 = Array.from({length: n1}, (_, k) => s0 + k*1000);
+  const per = 1000/DT, bin1 = k => Math.floor((t1[k] - tA)/DT);
+  const agg = (arr, fn) => t1.map((_, k) => { const b = bin1(k); return fn(arr.slice(Math.max(0,b), Math.max(0,b+per))); });
+  const a1s = agg(a1, meanOf), a2s = agg(a2, meanOf), yaw1 = agg(yawRaw, meanOf);
+  const vertRms = agg(vert, v => { const x = v.filter(isNum); return x.length ? Math.sqrt(x.reduce((s,y)=>s+y*y,0)/x.length) : NaN; });
+
+  let spd1 = new Array(n1).fill(NaN), gAcc1 = spd1.slice(), hRate1 = spd1.slice(), lat1 = spd1.slice(), lon1 = spd1.slice(), dist1 = spd1.slice();
+  if (gps){
+    spd1 = interp(gps.t, gps.spd, t1); lat1 = interp(gps.t, gps.lat, t1); lon1 = interp(gps.t, gps.lon, t1); dist1 = interp(gps.t, gps.dist, t1);
+    gAcc1 = movAvg(spd1.map((_, k) => (k>0 && k<n1-1) ? (spd1[k+1]-spd1[k-1])/2 : NaN), 3);
+    // heading rate from positions, only while moving
+    // bearing over ±2 s (≈20 m at riding speed) so ~3 m GPS jitter does not swamp it
+    const brg = t1.map((_, k) => (k>1 && k<n1-2 && spd1[k] > 2 && isNum(lat1[k+2]) && isNum(lat1[k-2])) ? bearing(lat1[k-2],lon1[k-2],lat1[k+2],lon1[k+2]) : NaN);
+    hRate1 = brg.map((b, k) => { if (k === 0 || !isNum(b) || !isNum(brg[k-1])) return NaN; let d = b - brg[k-1]; if (d > 180) d -= 360; if (d < -180) d += 360; return d; });
+    hRate1 = movAvg(hRate1, 3);
+  }
+
+  /* ---- forward axis: fit to GPS or use metadata ---- */
+  const a1m = movAvg(a1s, 3), a2m = movAvg(a2s, 3);
+  let theta = 0, fitN = 0;
+  if (gps && P.axisMode === 'auto'){
+    let s11=0,s12=0,s22=0,s1g=0,s2g=0;
+    for (let k=0;k<n1;k++){ if (!(spd1[k] > 1) || !isNum(gAcc1[k]) || !isNum(a1m[k]) || !isNum(a2m[k])) continue;
+      s11+=a1m[k]*a1m[k]; s12+=a1m[k]*a2m[k]; s22+=a2m[k]*a2m[k]; s1g+=a1m[k]*gAcc1[k]; s2g+=a2m[k]*gAcc1[k]; fitN++; }
+    const det = s11*s22 - s12*s12;
+    if (fitN >= 60 && Math.abs(det) > 1e-9){ const c1 = (s22*s1g - s12*s2g)/det, c2 = (s11*s2g - s12*s1g)/det; theta = Math.atan2(c2, c1); }
+    else R.warn.push('Not enough moving GPS data to fit the forward direction, so the phone-setup axis was used.');
+  }
+  const fwdFrom = (x1, x2) => x1.map((v, i) => Math.cos(theta)*v + Math.sin(theta)*x2[i]);
+  const latFrom = (x1, x2) => x1.map((v, i) => Math.cos(theta)*x2[i] - Math.sin(theta)*v);
+  let fwd1 = fwdFrom(a1m, a2m);
+  let cF = corr(fwd1, gAcc1);
+  let fSign = 1;
+  if (P.autoSign === 'yes' && cF.r < 0){ fSign = -1; cF.r = -cF.r; }
+  R.checks.fwdAngleDeg = theta*180/Math.PI; R.checks.corrFwd = cF;
+
+  let ySign = 1, cY = corr(yaw1, hRate1);
+  if (P.autoSign === 'yes' && cY.r < -0.2){ ySign = -1; cY.r = -cY.r; }
+  R.checks.corrYaw = cY;
+  let lat1s = latFrom(a1m, a2m).map(v => v*fSign);
+  const centrip = spd1.map((v, k) => v * yaw1[k] * ySign * Math.PI/180);
+  let lSign = 1, cL = corr(lat1s, centrip);
+  if (P.autoSign === 'yes' && cL.r < -0.2){ lSign = -1; cL.r = -cL.r; }
+  R.checks.corrLat = cL;
+  R.checks.signs = { fwd: fSign, yaw: ySign, lat: lSign * fSign };
+
+  /* ---- 20 Hz derived & smoothed ---- */
+  const w = P.smoothSec * per;
+  const fwd = movAvg(fwdFrom(a1, a2).map(v => v*fSign), w);
+  const lat = movAvg(latFrom(a1, a2).map(v => v*fSign*lSign), w);
+  const yaw = movAvg(yawRaw.map(v => v*ySign), w);
+  fwd1 = fwd1.map(v => v*fSign); lat1s = lat1s.map(v => v*lSign);
+  const yaw1s = yaw1.map(v => v*ySign);
+
+  /* ---- events: stops ---- */
+  const stopRuns = (flags) => runs(flags).filter(([a,b]) => b - a + 1 >= P.stopMinDur);
+  const stopG = gps ? stopRuns(spd1.map(v => isNum(v) && v < P.stopSpeed)) : [];
+  const stopV = stopRuns(vertRms.map(v => isNum(v) && v < P.vibThr));
+  const flagG = new Array(n1).fill(false), flagV = new Array(n1).fill(false);
+  stopG.forEach(([a,b]) => { for (let k=a;k<=b;k++) flagG[k] = true; });
+  stopV.forEach(([a,b]) => { for (let k=a;k<=b;k++) flagV[k] = true; });
+  if (gps){
+    let agree = 0, n = 0, tp = 0, fp = 0, fn = 0;
+    for (let k=0;k<n1;k++){ if (!isNum(spd1[k]) || !isNum(vertRms[k])) continue; n++; if (flagG[k] === flagV[k]) agree++;
+      if (flagG[k] && flagV[k]) tp++; else if (flagV[k]) fp++; else if (flagG[k]) fn++; }
+    R.checks.stopAgree = n ? agree/n : NaN; R.checks.stopVib = { tp, fp, fn };
+  }
+  const primaryStops = gps ? stopG : stopV;
+  primaryStops.forEach(([a,b]) => R.events.push({ t: t1[a], type: 'stop', dur: b-a+1, value: gps ? meanOf(spd1.slice(a,b+1)) : meanOf(vertRms.slice(a,b+1)),
+    detail: gps ? 'GPS speed' : 'vibration (no GPS)' }));
+
+  /* ---- events: hard brakes & starts ---- */
+  const minB = Math.max(1, Math.round(P.minEvtDur * per));
+  const merge = rr => { const out = []; rr.forEach(x => { const l = out[out.length-1]; if (l && x[0] - l[1] < per/2) l[1] = x[1]; else out.push(x.slice()); }); return out; };
+  merge(runs(fwd.map(v => v < -P.brakeThr))).filter(([a,b]) => b-a+1 >= minB).forEach(([a,b]) => {
+    let pk = 0, pi = a; for (let k=a;k<=b;k++) if (fwd[k] < pk){ pk = fwd[k]; pi = k; }
+    R.events.push({ t: tg[pi], type: 'hard_brake', dur: (b-a+1)/per, value: pk, detail: '' }); });
+  merge(runs(fwd.map(v => v > P.accelThr))).filter(([a,b]) => b-a+1 >= minB).forEach(([a,b]) => {
+    let pk = 0, pi = a; for (let k=a;k<=b;k++) if (fwd[k] > pk){ pk = fwd[k]; pi = k; }
+    R.events.push({ t: tg[pi], type: 'hard_start', dur: (b-a+1)/per, value: pk, detail: '' }); });
+
+  /* ---- events: turns ---- */
+  if (hasGyro){
+    [1, -1].forEach(sg => {
+      merge(runs(yaw.map(v => v*sg > P.turnRate))).forEach(([a,b]) => {
+        let ang = 0, pkLat = 0; for (let k=a;k<=b;k++){ if (isNum(yaw[k])) ang += yaw[k]/per; if (isNum(lat[k]) && Math.abs(lat[k]) > Math.abs(pkLat)) pkLat = lat[k]; }
+        if (Math.abs(ang) >= P.turnMinAngle) R.events.push({ t: tg[Math.round((a+b)/2)], type: sg > 0 ? 'turn_right' : 'turn_left', dur: (b-a+1)/per,
+          value: ang, detail: `peak sideways ${pkLat.toFixed(2)} m/s²` });
+      });
+    });
+  } else {
+    R.warn.push('No gyroscope data, so turns were detected from sideways acceleration (less reliable).');
+    merge(runs(lat.map(v => Math.abs(v) > 1.2))).filter(([a,b]) => b-a+1 >= per).forEach(([a,b]) => {
+      const m = meanOf(lat.slice(a,b+1)); R.events.push({ t: tg[Math.round((a+b)/2)], type: m > 0 ? 'turn_right' : 'turn_left', dur: (b-a+1)/per, value: m, detail: 'from sideways accel' }); });
+  }
+
+  R.series = { tg, fwd, lat, yaw, t1, fwd1, lat1: lat1s, yaw1: yaw1s, vertRms, spd1, gAcc1, hRate1, lat1g: lat1, lon1, dist1, flagG, flagV, hasGyro, gps };
+  attachAudio(s, R, off);
+  attachMarkers(s, R, off);
+  R.events.sort((a,b) => a.t - b.t);
+  buildSummary(R);
+  return R;
+}
+
+function finishAudioOnly(s, R, gps, off){
+  R.series = { tg: [], fwd: [], lat: [], yaw: [], t1: [], fwd1: [], lat1: [], yaw1: [], vertRms: [], spd1: [], gAcc1: [], hRate1: [], lat1g: [], lon1: [], dist1: [], flagG: [], flagV: [], gps };
+  attachAudio(s, R, off); attachMarkers(s, R, off); buildSummary(R); return R;
+}
+
+function attachAudio(s, R, off){
+  if (!s.audio || !s.audio.n){ R.audio = null; R.warn.push('No sound data.'); return; }
+  const c = s.audio.cols, n = s.audio.n;
+  const rows = [];
+  for (let i=0;i<n;i++){
+    const row = { t: c.t_epoch_ms[i] + off, laeq: c.laeq_cal_db[i], l90: c.l90_a_dbfs[i] + (c.laeq_cal_db[i] - c.laeq_dbfs[i]),
+      low: c.low_ratio[i], sp: c.speech_ratio[i], hi: c.high_ratio[i], flat: c.flatness[i], mod: c.speech_mod_2_8hz[i],
+      rhythm: c.rhythm[i], cent: c.centroid_hz[i], phoneClass: c.sound_class ? c.sound_class[i] : '' };
+    row.laeqRaw = c.laeq_dbfs[i];
+    row.cls = classify({ ...row, laeq: row.laeqRaw });
+    rows.push(row);
+  }
+  R.audio = rows;
+  const cnt = {}; rows.forEach(x => cnt[x.cls] = (cnt[x.cls]||0)+1); R.checks.classCounts = cnt;
+}
+
+function attachMarkers(s, R, off){
+  R.markers = [];
+  if (!s.events || !s.events.n) return;
+  const c = s.events.cols;
+  for (let i=0;i<s.events.n;i++){
+    const lab = c.label[i];
+    if (['start','stop','calibration_done','app_visible'].includes(lab)) continue;
+    R.markers.push({ t: c.t_epoch_ms[i] + off, label: lab, note: c.note ? c.note[i] : '' });
+    if (lab === 'app_hidden') R.warn.push(`App went to the background at ${fmtT(c.t_epoch_ms[i] + off)}, so sensors probably paused.`);
+  }
+}
+
+function buildSummary(R){
+  const S = R.series, A = R.audio || [];
+  // map audio to 1 Hz grid (nearest within 1 s)
+  let t1 = S.t1;
+  if (!t1.length && A.length){ t1 = A.map(a => Math.round(a.t/1000)*1000); S.t1 = t1; }
+  const aIdx = new Array(t1.length).fill(-1);
+  let j = 0;
+  for (let k=0;k<t1.length;k++){
+    while (j < A.length-1 && Math.abs(A[j+1].t - t1[k]) <= Math.abs(A[j].t - t1[k])) j++;
+    if (A.length && Math.abs(A[j].t - t1[k]) <= 1000) aIdx[k] = j;
+  }
+  const evBySec = new Map();
+  R.events.concat(R.markers.map(m => ({ t: m.t, type: 'marker:' + m.label }))).forEach(e => {
+    const k = Math.round((e.t - (t1[0]||0))/1000); if (!evBySec.has(k)) evBySec.set(k, []); evBySec.get(k).push(e.type); });
+  const fwd20 = S.fwd, tg = S.tg, per = 20;
+  R.summary = t1.map((t, k) => {
+    const a = aIdx[k] >= 0 ? A[aIdx[k]] : null;
+    const b = tg.length ? Math.floor((t - tg[0])/50) : -1;
+    const sl = (arr) => b >= 0 ? arr.slice(Math.max(0,b), Math.max(0,b+per)) : [];
+    const fw = sl(fwd20), la = sl(S.lat), yw = sl(S.yaw);
+    return {
+      t_epoch_ms: t, time_iso: new Date(t).toISOString(), t_rel_s: (t - t1[0])/1000,
+      lat: S.lat1g[k], lon: S.lon1[k], speed_mps: S.spd1[k], dist_m: S.dist1[k],
+      laeq_db: a ? a.laeq : NaN, sound_class: a ? a.cls : '', speech_ratio: a ? a.sp : NaN, speech_mod: a ? a.mod : NaN,
+      rhythm: a ? a.rhythm : NaN, low_ratio: a ? a.low : NaN, flatness: a ? a.flat : NaN,
+      fwd_mean: meanOf(fw), fwd_min: fw.length ? Math.min(...fw.filter(isNum)) : NaN,
+      lat_absmax: la.length ? Math.max(...la.filter(isNum).map(Math.abs)) : NaN,
+      yaw_absmax: yw.length ? Math.max(...yw.filter(isNum).map(Math.abs)) : NaN,
+      gps_accel: S.gAcc1[k], vert_rms: S.vertRms[k],
+      stopped_gps: S.flagG[k] ? 1 : 0, stopped_vib: S.flagV[k] ? 1 : 0,
+      events: (evBySec.get(k) || []).join(' ')
+    };
+  }).map(o => { for (const k in o) if (o[k] === -Infinity || o[k] === Infinity) o[k] = NaN; return o; });
+  buildSegments(R);
+}
+
+function buildSegments(R){
+  const rows = R.summary; R.segments = [];
+  if (!rows.length) return;
+  const byDist = P.segMode === 'distance' && rows.some(x => isNum(x.dist_m));
+  const segOf = x => byDist ? (isNum(x.dist_m) ? Math.floor(x.dist_m / P.segLen) : null) : Math.floor(x.t_rel_s / P.segSec);
+  const groups = new Map();
+  rows.forEach(x => { const g = segOf(x); if (g == null) return; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(x); });
+  const evs = R.events, mk = R.markers;
+  [...groups.entries()].sort((a,b) => a[0]-b[0]).forEach(([g, xs]) => {
+    const t0 = xs[0].t_epoch_ms, t1 = xs[xs.length-1].t_epoch_ms + 1000, mins = (t1 - t0)/60000;
+    const inSeg = e => e.t >= t0 && e.t < t1;
+    const cls = xs.map(x => x.sound_class).filter(Boolean);
+    const frac = c => cls.length ? cls.filter(v => v === c).length / cls.length : NaN;
+    const laeq = energyMean(xs.map(x => x.laeq_db));
+    const nStops = evs.filter(e => e.type === 'stop' && inSeg(e)).length;
+    const nBrakes = evs.filter(e => e.type === 'hard_brake' && inSeg(e)).length;
+    const nTurns = evs.filter(e => e.type.startsWith('turn') && inSeg(e)).length;
+    const comps = { noise: isNum(laeq) ? clamp01((laeq - P.noiseLo)/(P.noiseHi - P.noiseLo)) : NaN,
+      voices: frac('voices_like'), stops: clamp01(nStops / mins / 2), brakes: clamp01(nBrakes / mins / 2) };
+    const W = { noise: P.wNoise, voices: P.wVoices, stops: P.wStops, brakes: P.wBrakes };
+    let num = 0, den = 0; for (const k in comps) if (isNum(comps[k])){ num += W[k]*comps[k]; den += W[k]; }
+    R.segments.push({
+      segment: g, label: byDist ? `${g*P.segLen}–${(g+1)*P.segLen} m` : `${g*P.segSec}–${(g+1)*P.segSec} s`,
+      start_iso: new Date(t0).toISOString(), duration_s: (t1-t0)/1000,
+      lat_start: xs.find(x => isNum(x.lat))?.lat ?? NaN, lon_start: xs.find(x => isNum(x.lon))?.lon ?? NaN,
+      mean_speed_kmh: meanOf(xs.map(x => x.speed_mps))*3.6, laeq_db: laeq, l90_db: pctl(xs.map(x => x.laeq_db), 0.1),
+      pct_voices: frac('voices_like')*100, pct_music: frac('music_like')*100, pct_wind: frac('wind_lowfreq')*100,
+      stops: nStops, hard_brakes: nBrakes, turns: nTurns,
+      markers: mk.filter(inSeg).map(m => m.label).join(' '),
+      busyness_score: den ? 100*num/den : NaN
+    });
+  });
+}
+
+/* ======================= ground truth ======================= */
+function groundTruth(R){
+  const out = [];
+  const W = P.gtWindow*1000;
+  R.markers.forEach(m => {
+    const near = (R.audio || []).filter(a => Math.abs(a.t - m.t) <= W);
+    const cnt = {}; near.forEach(a => cnt[a.cls] = (cnt[a.cls]||0)+1);
+    const top = Object.entries(cnt).sort((a,b) => b[1]-a[1])[0];
+    let expected = null, match = '';
+    if (m.label === 'crowd') expected = 'voices_like';
+    if (m.label === 'music') expected = 'music_like';
+    if (expected) match = cnt[expected] ? 'yes' : 'no';
+    let motion = '';
+    if (m.label === 'near_miss'){
+      const ev = R.events.filter(e => Math.abs(e.t - m.t) <= W && e.type !== 'stop');
+      motion = ev.length ? ev.map(e => e.type).join(', ') : 'nothing detected';
+      match = ev.length ? 'yes' : 'no';
+    }
+    out.push({ sid: R.sid, t: m.t, label: m.label, note: m.note, expected: expected || (m.label === 'near_miss' ? 'brake/turn/start event' : ''),
+      found: top ? `${top[0]} (${top[1]}/${near.length} s)` : (near.length ? '' : 'no sound data'),
+      classes: Object.entries(cnt).map(([k,v]) => `${k}:${v}`).join(' '), motion, match });
+  });
+  return out;
+}
+
+/* ======================= auto-align ======================= */
+$('alignBtn').onclick = () => {
+  const ss = [...ST.sessions.values()].filter(s => s.include && s.motion && s.motion.n > 100);
+  if (ss.length < 2){ $('alignMsg').textContent = 'Need two sessions with motion data.'; return; }
+  const ref = ss[0];
+  const env = (s, t0, t1) => {          // |accel| envelope at 20 Hz in [t0,t1] (offset applied)
+    const c = s.motion.cols, off = s.offsetS*1000, n = Math.round((t1-t0)/50), out = new Float64Array(n), k = new Uint16Array(n);
+    for (let i=0;i<s.motion.n;i++){ const b = Math.floor((c.t_epoch_ms[i] + off - t0)/50); if (b < 0 || b >= n) continue;
+      out[b] += Math.hypot(c.acc_x[i], c.acc_y[i], c.acc_z[i]); k[b]++; }
+    const v = Array.from(out, (x,i) => k[i] ? x/k[i] : 0); const m = v.reduce((a,b)=>a+b,0)/n; return v.map(x => x - m);
+  };
+  const syncT = s => { if (!s.events) return null; const i = s.events.cols.label.indexOf('sync_bump'); return i >= 0 ? s.events.cols.t_epoch_ms[i] + s.offsetS*1000 : null; };
+  const msgs = [];
+  ss.slice(1).forEach(s => {
+    const centre = syncT(ref) ?? (ref.motion.cols.t_epoch_ms[0] + ref.offsetS*1000 + 30000);
+    const t0 = centre - 30000, t1 = centre + 30000, maxLag = 200; // ±10 s
+    const a = env(ref, t0, t1), b = env(s, t0 - 10000, t1 + 10000);
+    let best = -Infinity, bestL = 0;
+    for (let L=-maxLag; L<=maxLag; L++){ let sum = 0; for (let i=0;i<a.length;i++){ const j = i + 200 + L; if (j>=0 && j<b.length) sum += a[i]*b[j]; } if (sum > best){ best = sum; bestL = L; } }
+    s.offsetS = Math.round((s.offsetS - bestL*0.05)*100)/100;
+    msgs.push(`${s.sid}: offset ${s.offsetS.toFixed(2)} s`);
+  });
+  $('alignMsg').textContent = 'Aligned to first session: ' + msgs.join('; ') + '. Check the sync-bump spike lines up in the forward-acceleration chart.';
+  renderSessTable(); runAll();
+};
+
+/* ======================= rendering ======================= */
+const fmtT = t => new Date(t).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+const toDate = arr => arr.map(t => new Date(t));
+const plotBase = (ytitle, y2title) => ({
+  margin: { l: 55, r: y2title ? 55 : 15, t: 10, b: 40 }, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+  font: { color: dark ? '#cfd6e2' : '#334155', size: 12 }, hovermode: 'x unified', showlegend: true,
+  legend: { orientation: 'h', y: 1.12 },
+  xaxis: { type: 'date', gridcolor: dark ? '#273041' : '#e5e7eb' },
+  yaxis: { title: ytitle, gridcolor: dark ? '#273041' : '#e5e7eb', zerolinecolor: dark ? '#3a4558' : '#cbd5e1' },
+  ...(y2title ? { yaxis2: { title: y2title, overlaying: 'y', side: 'right', showgrid: false } } : {})
+});
+const CFG = { responsive: true, displaylogo: false, toImageButtonOptions: { format: 'png', scale: 2 } };
+
+function markerShapes(results){
+  const shapes = [], ann = [];
+  const MC = { crowd:'#7c3aed', music:'#db2777', traffic:'#475569', near_miss:'#c0262d', sync_bump:'#0b63ce', note:'#6b7280', app_hidden:'#b45309' };
+  results.forEach(R => R.markers.forEach(m => {
+    shapes.push({ type:'line', xref:'x', yref:'paper', x0:new Date(m.t), x1:new Date(m.t), y0:0, y1:1, line:{ color: MC[m.label]||'#888', width:1.2, dash:'dot' } });
+    ann.push({ x:new Date(m.t), y:1, xref:'x', yref:'paper', text:m.label, showarrow:false, font:{ size:10, color: MC[m.label]||'#888' }, textangle:-90, xanchor:'right', yanchor:'top' });
+  }));
+  return { shapes, ann };
+}
+
+function render(results){
+  const ms = markerShapes(results);
+  /* ---- QC tiles ---- */
+  const qc = $('qc'); qc.innerHTML = '';
+  results.forEach((R, i) => {
+    const c = R.checks, col = SESS_COLORS[i % SESS_COLORS.length];
+    const q = (v, good, ok) => !isNum(v) ? '' : v >= good ? 'good' : v >= ok ? 'meh' : 'badc';
+    const tile = (k, v, cls, n) => `<div class="tile"><div class="k">${k}</div><div class="v ${cls||''}">${v}</div><div class="n">${n||''}</div></div>`;
+    const cc = c.classCounts || {}, ctot = Object.values(cc).reduce((a,b)=>a+b,0) || 1;
+    qc.insertAdjacentHTML('beforeend', `<h3 style="font-size:14px;margin:12px 0 8px"><span class="sw" style="background:${col}"></span> ${esc(R.sid)}</h3>
+      <div class="tiles">
+        ${tile('Motion sample rate', isNum(c.motionHz) ? c.motionHz.toFixed(0)+' Hz' : '–', '', `${c.gaps||0} gaps &gt;1 s`)}
+        ${tile('Gravity during calibration', isNum(c.gravityMag) ? c.gravityMag.toFixed(2)+' m/s²' : '–', isNum(c.calibSd) ? (c.calibSd < 0.15 ? 'good' : c.calibSd < 0.3 ? 'meh' : 'badc') : '', isNum(c.calibSd) ? `stillness sd ${c.calibSd.toFixed(3)} at t=${c.calibAt.toFixed(0)} s` : '')}
+        ${tile('Fwd accel vs GPS', isNum(c.corrFwd?.r) ? 'r = '+c.corrFwd.r.toFixed(2) : 'no GPS', q(c.corrFwd?.r, 0.6, 0.3), isNum(c.fwdAngleDeg) ? `axis rotated ${c.fwdAngleDeg.toFixed(0)}° · n=${c.corrFwd.n}` : '')}
+        ${tile('Gyro vs GPS heading', isNum(c.corrYaw?.r) ? 'r = '+c.corrYaw.r.toFixed(2) : '–', q(c.corrYaw?.r, 0.6, 0.3), c.signs ? `signs fwd ${c.signs.fwd>0?'+':'−'} yaw ${c.signs.yaw>0?'+':'−'} lat ${c.signs.lat>0?'+':'−'}` : '')}
+        ${tile('Sideways vs v·yaw', isNum(c.corrLat?.r) ? 'r = '+c.corrLat.r.toFixed(2) : '–', q(c.corrLat?.r, 0.5, 0.25), 'centripetal check')}
+        ${tile('Stops: vibration vs GPS', isNum(c.stopAgree) ? (c.stopAgree*100).toFixed(0)+'% agree' : '–', q(c.stopAgree, 0.9, 0.75), c.stopVib ? `false alarms ${c.stopVib.fp}s · missed ${c.stopVib.fn}s` : 'needs GPS')}
+        ${tile('GPS', c.gpsFixes ? c.gpsFixes+' fixes' : 'none', '', c.gpsFixes ? `median accuracy ${r(c.gpsMedianAcc,1)} m · ${c.gpsRejected} rejected` : '')}
+        ${tile('Sound classes', Object.keys(cc).length ? '' : '–', '', Object.entries(cc).map(([k,v]) => `${k} ${(v/ctot*100).toFixed(0)}%`).join(' · '))}
+      </div>
+      ${R.warn.length ? `<ul class="muted">${R.warn.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}`);
+  });
+
+  /* ---- sound level ---- */
+  const tl = [];
+  results.forEach((R, i) => { if (!R.audio) return; const col = SESS_COLORS[i % SESS_COLORS.length], short = shortName(R);
+    tl.push({ x: toDate(R.audio.map(a => a.t)), y: R.audio.map(a => a.laeq), name: `${short} LAeq`, type: 'scattergl', mode: 'lines', line: { color: col, width: 1.5 } });
+    tl.push({ x: toDate(R.audio.map(a => a.t)), y: R.audio.map(a => a.l90), name: `${short} L90 (background)`, type: 'scattergl', mode: 'lines', line: { color: col, width: 1, dash: 'dot' } });
+    tl.push({ x: toDate(R.audio.map(a => a.t)), y: R.audio.map(a => a.laeq), name: `${short} class`, type: 'scattergl', mode: 'markers',
+      marker: { size: 5, color: R.audio.map(a => CLASS_COLORS[a.cls] || '#999') }, text: R.audio.map(a => a.cls), hovertemplate: '%{text}<extra></extra>', showlegend: false });
+  });
+  Plotly.react('pLevel', tl, { ...plotBase('dB(A) (relative unless calibrated)'), shapes: ms.shapes, annotations: ms.ann }, CFG);
+  $('classLegend').innerHTML = Object.entries(CLASS_COLORS).map(([k,c]) => `<span><i class="sw" style="background:${c}"></i>${k}</span>`).join('');
+
+  /* ---- features ---- */
+  const tf = [];
+  const FEAT = [['sp','speech-band ratio'],['mod','2–8 Hz speech modulation'],['rhythm','beat regularity'],['flat','spectral flatness'],['low','low-freq (wind) ratio']];
+  const R0 = results.find(R => R.audio);
+  if (R0) FEAT.forEach(([k, n], j) => tf.push({ x: toDate(R0.audio.map(a => a.t)), y: movAvg(R0.audio.map(a => a[k]), 3), name: n, type: 'scattergl', mode: 'lines',
+    line: { width: 1.5, color: ['#7c3aed','#a855f7','#db2777','#f59e0b','#64748b'][j] } }));
+  Plotly.react('pFeat', tf, { ...plotBase(R0 ? `0–1 (${shortName(R0)}, 3 s smoothed)` : ''), shapes: ms.shapes }, CFG);
+
+  /* ---- forward ---- */
+  const tw = [], shF = ms.shapes.slice();
+  results.forEach((R, i) => { const S = R.series, col = SESS_COLORS[i % SESS_COLORS.length], short = shortName(R);
+    if (S.tg.length){ const st = Math.max(1, Math.floor(S.tg.length / 40000));
+      tw.push({ x: toDate(S.tg.filter((_,k) => k%st===0)), y: S.fwd.filter((_,k) => k%st===0), name: `${short} fwd accel`, type: 'scattergl', mode: 'lines', line: { color: col, width: 1 } }); }
+    if (S.gps){ tw.push({ x: toDate(S.t1), y: S.gAcc1, name: `${short} GPS accel`, type: 'scattergl', mode: 'lines', line: { color: col, width: 2, dash: 'dash' } });
+      if (i === 0) tw.push({ x: toDate(S.t1), y: S.spd1.map(v => v*3.6), name: 'speed (km/h)', yaxis: 'y2', type: 'scattergl', mode: 'lines', line: { color: '#94a3b8', width: 1.5 } }); }
+    const br = R.events.filter(e => e.type === 'hard_brake'), hs = R.events.filter(e => e.type === 'hard_start');
+    tw.push({ x: toDate(br.map(e => e.t)), y: br.map(e => e.value), name: `${short} hard brake`, type: 'scatter', mode: 'markers', marker: { symbol: 'triangle-down', size: 11, color: '#c0262d' } });
+    tw.push({ x: toDate(hs.map(e => e.t)), y: hs.map(e => e.value), name: `${short} hard start`, type: 'scatter', mode: 'markers', marker: { symbol: 'triangle-up', size: 11, color: '#14804a' } });
+    if (i === 0) R.events.filter(e => e.type === 'stop').forEach(e => shF.push({ type: 'rect', xref: 'x', yref: 'paper', x0: new Date(e.t), x1: new Date(e.t + e.dur*1000), y0: 0, y1: 1, fillcolor: 'rgba(120,120,120,.15)', line: { width: 0 } }));
+  });
+  Plotly.react('pFwd', tw, { ...plotBase('m/s² (+ = speeding up)', 'km/h'), shapes: shF }, CFG);
+
+  /* ---- turns ---- */
+  const tt = [];
+  results.forEach((R, i) => { const S = R.series, col = SESS_COLORS[i % SESS_COLORS.length], short = shortName(R); if (!S.tg.length) return;
+    const st = Math.max(1, Math.floor(S.tg.length / 40000)), x = toDate(S.tg.filter((_,k) => k%st===0));
+    if (S.hasGyro) tt.push({ x, y: S.yaw.filter((_,k) => k%st===0), name: `${short} yaw rate °/s`, type: 'scattergl', mode: 'lines', line: { color: col, width: 1.3 } });
+    tt.push({ x, y: S.lat.filter((_,k) => k%st===0), name: `${short} sideways m/s²`, yaxis: 'y2', type: 'scattergl', mode: 'lines', line: { color: col, width: 1, dash: 'dot' }, opacity: 0.7 });
+    if (S.gps && i === 0) tt.push({ x: toDate(S.t1), y: S.hRate1, name: 'GPS heading change °/s', type: 'scattergl', mode: 'lines', line: { color: '#94a3b8', width: 2, dash: 'dash' } });
+    const tu = R.events.filter(e => e.type.startsWith('turn'));
+    tt.push({ x: toDate(tu.map(e => e.t)), y: tu.map(e => e.type === 'turn_right' ? P.turnRate : -P.turnRate), name: `${short} turns`, type: 'scatter', mode: 'markers',
+      marker: { symbol: 'diamond', size: 11, color: '#0891b2' }, text: tu.map(e => `${e.type} ${e.value.toFixed(0)}°`), hovertemplate: '%{text}<extra></extra>' });
+  });
+  Plotly.react('pTurn', tt, { ...plotBase('yaw °/s (+ = right)', 'sideways m/s²'), shapes: ms.shapes }, CFG);
+
+  /* ---- vibration ---- */
+  const tv = [];
+  results.forEach((R, i) => { const S = R.series, col = SESS_COLORS[i % SESS_COLORS.length]; if (!S.t1.length) return;
+    tv.push({ x: toDate(S.t1), y: S.vertRms, name: `${shortName(R)} vertical RMS`, type: 'scattergl', mode: 'lines', line: { color: col, width: 1.3 } }); });
+  const rng = results.find(R => R.series.t1.length)?.series.t1;
+  if (rng) tv.push({ x: [new Date(rng[0]), new Date(rng[rng.length-1])], y: [P.vibThr, P.vibThr], name: 'stop threshold', mode: 'lines', line: { color: '#c0262d', dash: 'dash', width: 1 } });
+  Plotly.react('pVib', tv, { ...plotBase('m/s² RMS (1 s)'), shapes: ms.shapes }, CFG);
+
+  renderMap(results);
+  renderTables(results);
+}
+const shortName = R => `${R.meta.position || ''}${R.meta.phone_id ? '-' + R.meta.phone_id : ''}` || R.sid.slice(0, 18);
+
+/* ---- map ---- */
+function colorRamp(t){ // perceptual-ish blue→yellow→red
+  t = clamp01(t); const stops = [[0,[40,90,200]],[0.5,[245,200,40]],[1,[200,30,40]]];
+  for (let i=1;i<stops.length;i++) if (t <= stops[i][0]){ const [a,ca] = stops[i-1], [b,cb] = stops[i], f = (t-a)/(b-a);
+    return `rgb(${ca.map((v,j) => Math.round(v + f*(cb[j]-v))).join(',')})`; }
+  return 'rgb(200,30,40)';
+}
+function renderMap(results){
+  const sel = $('mapSess'), withGps = results.filter(R => R.series.gps);
+  const prev = sel.value;
+  sel.innerHTML = withGps.map(R => `<option value="${esc(R.sid)}">${esc(shortName(R))} · ${esc(R.sid)}</option>`).join('');
+  if (withGps.some(R => R.sid === prev)) sel.value = prev;
+  if (typeof L === 'undefined'){ $('map').textContent = 'Map library failed to load (offline?).'; return; }
+  if (!ST.map){
+    ST.map = L.map('map');
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(ST.map);
+    ST.mapLayers = L.layerGroup().addTo(ST.map);
+  }
+  ST.mapLayers.clearLayers();
+  const R = withGps.find(x => x.sid === sel.value) || withGps[0];
+  if (!R){ $('mapLegend').textContent = 'No GPS data in the loaded sessions.'; ST.map.setView([37.4275, -122.1697], 14); return; }
+  const rows = R.summary.filter(x => isNum(x.lat) && isNum(x.lon));
+  const metric = $('mapMetric').value;
+  const segOf = x => { const g = P.segMode === 'distance' ? Math.floor(x.dist_m / P.segLen) : Math.floor(x.t_rel_s / P.segSec); return R.segments.find(s => s.segment === g); };
+  let val, lo, hi, unit;
+  if (metric === 'db'){ val = x => x.laeq_db; const v = rows.map(val).filter(isNum); lo = pctl(v, 0.05); hi = pctl(v, 0.95); unit = 'dB'; }
+  else if (metric === 'speed'){ val = x => x.speed_mps*3.6; lo = 0; hi = 30; unit = 'km/h'; }
+  else if (metric === 'voices'){ val = x => segOf(x)?.pct_voices; lo = 0; hi = 100; unit = '% voices'; }
+  else { val = x => segOf(x)?.busyness_score; lo = 0; hi = 100; unit = 'busyness'; }
+  for (let i=1;i<rows.length;i++){
+    const v = val(rows[i]); if (rows[i].t_epoch_ms - rows[i-1].t_epoch_ms > 3000) continue;
+    L.polyline([[rows[i-1].lat, rows[i-1].lon], [rows[i].lat, rows[i].lon]], { color: isNum(v) ? colorRamp((v-lo)/(hi-lo||1)) : '#999', weight: 6, opacity: 0.9 }).addTo(ST.mapLayers);
+  }
+  const EC = { stop: '#6b7280', hard_brake: '#c0262d', hard_start: '#14804a', turn_left: '#0891b2', turn_right: '#0891b2' };
+  const posAt = t => { const k = Math.round((t - R.summary[0].t_epoch_ms)/1000); const x = R.summary[Math.max(0, Math.min(R.summary.length-1, k))]; return x && isNum(x.lat) ? [x.lat, x.lon] : null; };
+  R.events.forEach(e => { const p = posAt(e.t); if (!p) return;
+    L.circleMarker(p, { radius: e.type === 'stop' ? 7 : 5, color: '#fff', weight: 1.5, fillColor: EC[e.type], fillOpacity: 1 })
+      .bindPopup(`<b>${e.type}</b><br>${fmtT(e.t)}<br>${e.type === 'stop' ? e.dur + ' s' : r(e.value,2)}`).addTo(ST.mapLayers); });
+  R.markers.forEach(m => { const p = posAt(m.t); if (!p) return;
+    L.marker(p, { title: m.label }).bindPopup(`<b>marker: ${esc(m.label)}</b><br>${fmtT(m.t)}<br>${esc(m.note||'')}`).addTo(ST.mapLayers); });
+  setTimeout(() => { ST.map.invalidateSize();
+    if (rows.length) ST.map.fitBounds(L.latLngBounds(rows.map(x => [x.lat, x.lon])), { padding: [20, 20] }); }, 80);
+  $('mapLegend').innerHTML = `<span><i class="sw" style="background:${colorRamp(0)}"></i>${r(lo,0)} ${unit}</span><span><i class="sw" style="background:${colorRamp(.5)}"></i></span>
+    <span><i class="sw" style="background:${colorRamp(1)}"></i>${r(hi,0)} ${unit}</span>` +
+    Object.entries({ stop:'stop', hard_brake:'hard brake', hard_start:'hard start', turn_left:'turn' }).map(([k,n]) => `<span><i class="sw" style="background:${EC[k]};border-radius:50%"></i>${n}</span>`).join('') + '<span>📍 your markers</span>';
+}
+$('mapMetric').onchange = () => renderMap([...ST.results.values()]);
+$('mapSess').onchange = () => renderMap([...ST.results.values()]);
+
+/* ---- tables ---- */
+function table(el, rows, cols){
+  el.innerHTML = `<tr>${cols.map(c => `<th>${c[1]}</th>`).join('')}</tr>` + rows.map(x => `<tr>${cols.map(c => {
+    const v = c[2] ? c[2](x) : x[c[0]]; return `<td>${esc(typeof v === 'number' ? (isNum(v) ? r(v, 2) : '') : v ?? '')}</td>`; }).join('')}</tr>`).join('');
+}
+function renderTables(results){
+  const segs = results.flatMap(R => R.segments.map(s => ({ ...s, sid: shortName(R) })));
+  table($('segTable'), segs, [['sid','Phone'],['label','Segment'],['start_iso','Start',x => fmtT(x.start_iso)],['duration_s','Dur (s)'],['mean_speed_kmh','km/h'],
+    ['laeq_db','LAeq'],['pct_voices','% voices'],['pct_music','% music'],['pct_wind','% wind'],['stops','Stops'],['hard_brakes','Brakes'],['turns','Turns'],['markers','Markers'],['busyness_score','Busyness']]);
+  const ev = results.flatMap(R => R.events.map(e => ({ ...e, sid: shortName(R) })));
+  table($('evTable'), ev, [['sid','Phone'],['t','Time',x => fmtT(x.t)],['type','Event'],['dur','Duration (s)'],['value','Value',x => x.type === 'stop' ? '' : x.value],['detail','Detail']]);
+  const gt = results.flatMap(R => groundTruth(R).map(g => ({ ...g, sid: shortName(R) })));
+  ST.gt = gt;
+  table($('gtTable'), gt, [['sid','Phone'],['t','Time',x => fmtT(x.t)],['label','Your marker'],['expected','Detector should say'],['found','Most common sound class ±window'],['classes','All classes'],['motion','Motion events'],['match','Match?']]);
+  const rate = lab => { const g = gt.filter(x => x.label === lab && x.match); return g.length ? `${g.filter(x => x.match === 'yes').length}/${g.length}` : '–'; };
+  $('gtSummary').innerHTML = [['crowd','Crowd markers detected as voices'],['music','Music markers detected as music'],['near_miss','Near-misses with a motion event']]
+    .map(([k,n]) => `<div class="tile"><div class="k">${n}</div><div class="v">${rate(k)}</div><div class="n">within ±${P.gtWindow} s</div></div>`).join('') +
+    `<div class="tile"><div class="k">Note</div><div class="n">A match only shows the detector agrees near your markers. To estimate false alarms, also label stretches where there was <i>no</i> crowd (from video) and check what share were called voices.</div></div>`;
+}
+
+/* ======================= run ======================= */
+let runTimer = null;
+function runAll(){ clearTimeout(runTimer); runTimer = setTimeout(() => {
+  ST.results.clear();
+  const list = [...ST.sessions.values()].filter(s => s.include);
+  list.forEach(s => { try { ST.results.set(s.sid, processSession(s)); } catch (e){ console.error(e); alert(`Could not process ${s.sid}: ${e.message}`); } });
+  if (ST.results.size) render([...ST.results.values()]);
+}, 60); }
+
+/* ======================= export ======================= */
+function csvCell(v){ if (v == null || (typeof v === 'number' && !isFinite(v))) return ''; const s = typeof v === 'number' ? String(r(v, 5)) : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s; }
+function toCsv(rows){ if (!rows.length) return ''; const h = Object.keys(rows[0]); return h.join(',') + '\n' + rows.map(x => h.map(k => csvCell(x[k])).join(',')).join('\n') + '\n'; }
+function dl(text, name, type='text/csv'){ const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+const evRows = R => R.events.map(e => ({ session: R.sid, t_epoch_ms: e.t, time_iso: new Date(e.t).toISOString(), type: e.type, duration_s: e.dur, value: e.value, detail: e.detail }));
+function exportFiles(){
+  const files = [];
+  ST.results.forEach(R => {
+    files.push([`${R.sid}_summary_1hz.csv`, toCsv(R.summary)]);
+    files.push([`${R.sid}_events_detected.csv`, toCsv(evRows(R))]);
+    files.push([`${R.sid}_segments.csv`, toCsv(R.segments)]);
+  });
+  files.push(['ground_truth_check.csv', toCsv((ST.gt || []).map(g => ({ ...g, time_iso: new Date(g.t).toISOString() })))]);
+  const checks = Object.fromEntries([...ST.results.values()].map(R => [R.sid, { checks: R.checks, warnings: R.warn, clock_offset_s: ST.sessions.get(R.sid).offsetS }]));
+  files.push(['analysis_settings.json', JSON.stringify({ analysis_version: ANALYSIS_VERSION, run_iso: new Date().toISOString(), settings: P, sessions: checks }, null, 2)]);
+  return files;
+}
+$('expZip').onclick = async () => { const z = new JSZip(); exportFiles().forEach(([n, t]) => z.file(n, t));
+  const b = await z.generateAsync({ type: 'blob' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `bikesense_analysis_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.zip`; a.click(); };
+$('expSummary').onclick = () => ST.results.forEach(R => dl(toCsv(R.summary), `${R.sid}_summary_1hz.csv`));
+$('expEvents').onclick = () => dl(toCsv([...ST.results.values()].flatMap(evRows)), 'events_detected.csv');
+$('expSeg').onclick = () => dl(toCsv([...ST.results.values()].flatMap(R => R.segments.map(s => ({ session: R.sid, ...s })))), 'segments.csv');
+
+/* ======================= demo data ======================= */
+// Synthetic ride so you can try the page. It is NOT real data; never include it in results.
+function makeDemo(){
+  let seed = 42; const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const gauss = () => Math.sqrt(-2*Math.log(rand()+1e-12)) * Math.cos(2*Math.PI*rand());
+  const T = 600, t0 = Date.parse('2026-11-08T17:00:00Z');
+  // speed profile (m/s) with stops, plus heading changes (turns)
+  const speedAt = t => { const stops = [[120,140],[300,330],[480,492]];
+    if (t < 6) return 0;
+    for (const [a,b] of stops){ if (t >= a && t <= b) return 0;
+      if (t > a-4 && t < a) return 5.5*(a-t)/4 * (a === 300 ? 0.6 : 1);   // braking (harder at 300)
+      if (t > b && t < b+5) return 5.5*(t-b)/5; }
+    if (t < 11) return 5.5*(t-6)/5;
+    return 5.5 + 0.4*Math.sin(t/17); };
+  const turns = [[160,+90,4],[350,-90,5],[520,+90,4],[260,-45,3]];
+  const hRate = t => turns.reduce((s,[c,a,d]) => s + (t >= c && t < c+d ? a/d : 0), 0);   // deg/s, + = right
+  // integrate path at 50 Hz
+  const fs = 50, n = T*fs; const path = []; let lat = 37.4275, lon = -122.1697, hd = 90, v = 0;
+  for (let i=0;i<n;i++){ const t = i/fs; const nv = speedAt(t); const acc = (nv - v)*fs; v = nv; hd += hRate(t)/fs;
+    lat += v*Math.cos(hd*Math.PI/180)/fs/111111; lon += v*Math.sin(hd*Math.PI/180)/fs/(111111*Math.cos(lat*Math.PI/180));
+    path.push({ t, v, acc, hd, hr: hRate(t), lat, lon }); }
+  const accSmooth = movAvg(path.map(p => p.acc), 25);
+  const phones = [
+    { pos: 'handlebar', id: 'A', axis: 'back', u: vnorm([0, Math.cos(0.5), Math.sin(0.5)]), clock: 0, noise: 1.6, windGain: 1.0 },
+    { pos: 'frame', id: 'B', axis: 'top', u: [0,0,1], clock: 700, noise: 1.0, windGain: 0.6 }
+  ];
+  const files = [];
+  phones.forEach(ph => {
+    const u = ph.u, f = vnorm((() => { const a = AXES[ph.axis]; const d = dot(a,u); return [a[0]-d*u[0],a[1]-d*u[1],a[2]-d*u[2]]; })()), rt = cross(f, u);
+    const sid = `DEMO-campus-loop_${ph.pos}-${ph.id}_20261108-170000`;
+    const tStart = t0 + ph.clock;
+    const mot = ['t_epoch_ms,t_rel_s,acc_x,acc_y,acc_z,accg_x,accg_y,accg_z,rot_alpha_z_dps,rot_beta_x_dps,rot_gamma_y_dps,interval_ms,a_fwd,a_lat,a_vert,yaw_rate_dps'];
+    path.forEach((p, i) => {
+      const moving = p.v > 0.3, vib = moving ? ph.noise*(0.4 + p.v/6) : 0.04;
+      let vz = gauss()*vib; if (Math.abs(p.t - 8) < 0.1) vz += 12;      // sync bump at t=8 s (both phones)
+      const nz = moving ? ph.noise : 0.08;
+      const af = accSmooth[i] + gauss()*0.25*nz, al = p.v * p.hr*Math.PI/180 + gauss()*0.2*nz;
+      const lin = [0,1,2].map(j => af*f[j] + al*rt[j] + vz*u[j]);
+      const om = -p.hr + gauss()*1.5*nz;   // rotation about up (CCW +) = −heading rate
+      const w = u.map(x => x*om + gauss()*0.8*nz);
+      mot.push([ (t0 + p.t*1000 + ph.clock).toFixed(1), p.t.toFixed(3), ...lin.map(x => x.toFixed(4)), ...lin.map((x,j) => (x + 9.81*u[j]).toFixed(4)),
+        w[2].toFixed(3), w[0].toFixed(3), w[1].toFixed(3), '20', '', '', '', '' ].join(','));
+    });
+    const gp = ['t_epoch_ms,t_rel_s,lat,lon,accuracy_m,speed_mps,heading_deg,altitude_m'];
+    for (let i=0;i<n;i+=fs){ const p = path[i]; gp.push([(t0 + p.t*1000 + ph.clock).toFixed(1), p.t.toFixed(3), (p.lat + gauss()*0.00002).toFixed(7), (p.lon + gauss()*0.00002).toFixed(7), (4 + rand()*4).toFixed(1),
+      Math.max(0, p.v + gauss()*0.2).toFixed(3), p.hd.toFixed(1), '20'].join(',')); }
+    const au = ['t_epoch_ms,t_rel_s,leq_dbfs,laeq_dbfs,laeq_cal_db,lmax_a_dbfs,l10_a_dbfs,l90_a_dbfs,low_db,speech_db,high_db,low_ratio,speech_ratio,high_ratio,centroid_hz,flatness,speech_mod_2_8hz,speech_mod_depth,rhythm,sound_class'];
+    for (let s=1;s<T;s++){
+      const p = path[s*fs]; let L = -55, low = 0.4, sp = 0.3, hi = 0.15, flat = 0.4, mod = 0.18, rh = 0.12;
+      if ((s > 95 && s < 165) || (s > 455 && s < 525)){ L = -36; sp = 0.52; low = 0.25; mod = 0.45; rh = 0.12; flat = 0.33; }   // crowd
+      if (s > 200 && s < 262){ L = -40; sp = 0.42; low = 0.35; mod = 0.2; rh = 0.55; flat = 0.14; }                            // music
+      if (s > 360 && s < 430){ L = -45 + 3*ph.windGain; low = 0.75 + 0.12*ph.windGain; sp = 0.12; mod = 0.1; }                  // windy stretch
+      L += p.v*0.8*ph.windGain + gauss()*1.5; const jit = () => gauss()*0.04;
+      low = clamp01(low+jit()); sp = clamp01(sp+jit()); mod = clamp01(mod+jit()); rh = clamp01(rh+jit()); flat = clamp01(flat+jit()*0.5);
+      au.push([(t0 + s*1000 + ph.clock).toFixed(1), s, (L+2).toFixed(2), L.toFixed(2), L.toFixed(2), (L+6).toFixed(2), (L+3).toFixed(2), (L-6).toFixed(2),
+        (L-3).toFixed(2), (L-4).toFixed(2), (L-9).toFixed(2), low.toFixed(4), sp.toFixed(4), hi.toFixed(4), '1200', flat.toFixed(4), mod.toFixed(4), '0.3', rh.toFixed(4), ''].join(','));
+    }
+    const ev = ['t_epoch_ms,t_rel_s,label,note'];
+    [[0,'start',''],[3.1,'calibration_done',''],[8,'sync_bump',''],[130,'crowd','plaza'],[232,'music','cafe speaker'],[300,'near_miss','car door'],[490,'crowd','farmers market'],[600,'stop','']]
+      .forEach(([t,l,no]) => ev.push([(t0 + t*1000 + ph.clock).toFixed(1), t, l, no].join(',')));
+    const meta = { session_id: sid, position: ph.pos, phone_id: ph.id, forward_axis: ph.axis, route: 'DEMO-campus-loop', notes: 'SYNTHETIC DEMO DATA, not a real ride',
+      cal_offset_db: 0, start_iso: new Date(t0).toISOString() };
+    files.push([`${sid}_motion.csv`, mot.join('\n')], [`${sid}_gps.csv`, gp.join('\n')], [`${sid}_audio.csv`, au.join('\n')], [`${sid}_events.csv`, ev.join('\n')],
+      [`${sid}_metadata.json`, JSON.stringify(meta)]);
+  });
+  return files;
+}
+$('demoBtn').onclick = () => { makeDemo().forEach(([n, t]) => ingest(n, t)); afterLoad(); };
+
+buildSettings();
+</script>
+</body>
+</html>
