@@ -146,7 +146,7 @@ const $ = id => document.getElementById(id);
 const isNum = v => typeof v === 'number' && isFinite(v);
 const dark = matchMedia('(prefers-color-scheme: dark)').matches;
 const SESS_COLORS = ['#0b63ce','#e8710a','#14804a','#9333ea','#c0262d','#0891b2'];
-const CLASS_COLORS = { voices_like:'#7c3aed', music_like:'#db2777', wind_lowfreq:'#64748b', quiet:'#22c55e', mixed:'#f59e0b' };
+const CLASS_COLORS = { voices_like:'#7c3aed', music_like:'#db2777', wind_lowfreq:'#64748b', wind_suspect:'#a5b4c8', quiet:'#22c55e', mixed:'#f59e0b' };
 const AXES = { top:[0,1,0], bottom:[0,-1,0], right:[1,0,0], left:[-1,0,0], screen:[0,0,1], back:[0,0,-1] };
 const dot = (a,b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
 const vnorm = a => { const n = Math.hypot(...a) || 1; return a.map(v => v/n); };
@@ -156,10 +156,11 @@ const r = (v, d=3) => isNum(v) ? Math.round(v*10**d)/10**d : '';
 /* ======================= settings ======================= */
 const SPEC = [
   ['g','Orientation & calibration'],
-  ['calibMode','Find "down" from','select',['start','still'],'start','start = first N seconds after Start (your protocol); still = the stillest N-second stretch of the ride'],
+  ['calibMode','Find "down" from','select',['auto','start','still'],'auto','start = first N seconds after Start (your protocol); still = the stillest N-second stretch of the ride; auto = start, unless the bike moved then'],
   ['calibSec','Calibration window (s)','number',3,''],
   ['axisMode','Forward direction','select',['auto','meta'],'auto','auto = fit to GPS speed changes; meta = the side chosen on the phone'],
   ['autoSign','Auto-fix signs using GPS','select',['yes','no'],'yes','flips forward, turn and sideways signs if they disagree with GPS'],
+  ['partnerSign','Match the other phone on the same ride','select',['yes','no'],'yes','if two phones on one ride disagree on forward acceleration, flip the one with weaker GPS evidence'],
   ['smoothSec','Accel smoothing window (s)','number',0.5,'moving average applied before detecting events'],
   ['gpsMaxAcc','Ignore GPS fixes worse than (m)','number',30,''],
   ['g','Stopping & starting'],
@@ -179,13 +180,15 @@ const SPEC = [
   ['musicFlat','…and flatness below','number',0.3,''],
   ['voiceSpeech','Voices if speech-band ratio above','number',0.35,''],
   ['voiceMod','…and 2–8 Hz modulation above','number',0.3,''],
+  ['voiceMaxSpeed','Ignore voices-like above (km/h)','number',8,'wind on the mic sounds like voices at speed; those seconds become wind_suspect'],
   ['gtWindow','Ground-truth match window (± s)','number',5,''],
   ['g','Segments & busyness score'],
   ['segMode','Segment by','select',['distance','time'],'distance','time is used automatically if there is no GPS'],
   ['segLen','Segment length (m)','number',100,''],
   ['segSec','Segment length (s)','number',30,''],
-  ['noiseLo','Noise score 0 at (dB, calibrated scale)','number',-60,'use e.g. 50 once you have a dBA calibration offset'],
-  ['noiseHi','Noise score 1 at (dB)','number',-25,'e.g. 80 when calibrated'],
+  ['noiseAuto','Noise score range','select',['auto','manual'],'auto','auto = 5th–95th percentile of all loaded sound levels; manual = the two values below'],
+  ['noiseLo','Noise score 0 at (dB, calibrated scale)','number',-60,'manual mode only; e.g. 50 once you have a correct dBA offset'],
+  ['noiseHi','Noise score 1 at (dB)','number',-25,'manual mode only; e.g. 80 when calibrated'],
   ['wNoise','Weight: noise','number',0.3,''],
   ['wVoices','Weight: % voices','number',0.3,''],
   ['wStops','Weight: stops/min','number',0.2,''],
@@ -277,16 +280,18 @@ drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('
 
 function renderSessTable(){
   const t = $('sessTable');
-  t.innerHTML = '<tr><th>Use</th><th>Session</th><th>Position</th><th>Rows (motion / sound / GPS / events)</th><th>Clock offset (s)</th><th>Notes</th></tr>';
+  t.innerHTML = '<tr><th>Use</th><th>Session</th><th>Position</th><th>Rows (motion / sound / GPS / events)</th><th>Clock offset (s)</th><th>Flip forward</th><th>Notes</th></tr>';
   [...ST.sessions.values()].forEach((s, i) => {
     const tr = document.createElement('tr'); const m = s.meta || {};
     tr.innerHTML = `<td><input type="checkbox" ${s.include?'checked':''}></td>
       <td><span class="sw" style="background:${SESS_COLORS[i%SESS_COLORS.length]}"></span> <b></b></td>
       <td>${esc(m.position||'?')} · axis ${esc(m.forward_axis||'?')}</td>
       <td>${s.motion?.n||0} / ${s.audio?.n||0} / ${s.gps?.n||0} / ${s.events?.n||0}</td>
-      <td><input class="off" type="number" step="0.05" value="${s.offsetS}"></td><td class="muted"></td>`;
-    tr.querySelector('b').textContent = s.sid; tr.cells[5].textContent = m.notes || '';
+      <td><input class="off" type="number" step="0.05" value="${s.offsetS}"></td>
+      <td><input class="flip" type="checkbox" ${s.flipFwd?'checked':''} title="Reverse this phone's forward direction (overrides the automatic choice)"></td><td class="muted"></td>`;
+    tr.querySelector('b').textContent = s.sid; tr.cells[6].textContent = m.notes || '';
     tr.querySelector('input[type=checkbox]').onchange = e => { s.include = e.target.checked; runAll(); };
+    tr.querySelector('.flip').onchange = e => { s.flipFwd = e.target.checked; runAll(); };
     tr.querySelector('.off').onchange = e => { s.offsetS = parseFloat(e.target.value) || 0; runAll(); };
     t.appendChild(tr);
   });
@@ -368,7 +373,9 @@ function processSession(s){
       const dist = [0]; for (let k=1;k<t.length;k++) dist.push(dist[k-1] + haversine(lat[k-1],lon[k-1],lat[k],lon[k]));
       const spd = idx.map((i,k) => {
         if (isNum(c.speed_mps[i]) && c.speed_mps[i] >= 0) return c.speed_mps[i];
-        if (k === 0) return NaN; const dt = (t[k]-t[k-1])/1000; return dt > 0 ? (dist[k]-dist[k-1])/dt : NaN; });
+        if (k === 0) return NaN; const dt = (t[k]-t[k-1])/1000;
+        // position-derived speed: skip near-duplicate fixes and physically impossible bike speeds (> 20 m/s)
+        const v = dt >= 0.5 ? (dist[k]-dist[k-1])/dt : NaN; return v <= 20 ? v : NaN; });
       gps = { t, lat, lon, dist, spd: movAvg(spd, 3) };
       R.checks.gpsFixes = t.length; R.checks.gpsRejected = s.gps.n - t.length;
       R.checks.gpsMedianAcc = pctl(idx.map(i => c.accuracy_m[i]), 0.5);
@@ -396,24 +403,37 @@ function processSession(s){
 
   /* ---- calibration: gravity direction ---- */
   const nCal = Math.max(5, Math.round(P.calibSec * 1000 / DT));
-  let c0 = 0;
-  if (P.calibMode === 'still'){
-    let best = Infinity;
+  const findStill = () => {
+    let best = Infinity, c = 0;
     for (let b=0; b+nCal < nb; b += 5){
       let v = 0, n = 0, m = [0,0,0];
       for (let k=b;k<b+nCal;k++){ if (isNum(G[3][k])){ m[0]+=G[3][k]; m[1]+=G[4][k]; m[2]+=G[5][k]; n++; } }
       if (n < nCal*0.8) continue; m = m.map(x => x/n);
       for (let k=b;k<b+nCal;k++) if (isNum(G[3][k])) v += (G[3][k]-m[0])**2 + (G[4][k]-m[1])**2 + (G[5][k]-m[2])**2;
-      if (v/n < best){ best = v/n; c0 = b; }
+      if (v/n < best){ best = v/n; c = b; }
+    }
+    return c;
+  };
+  const calStats = c => {
+    const gm = [0,0,0]; let gn = 0, gv = 0;
+    for (let k=c;k<Math.min(nb, c+nCal);k++) if (isNum(G[3][k])){ gm[0]+=G[3][k]; gm[1]+=G[4][k]; gm[2]+=G[5][k]; gn++; }
+    gm.forEach((v,i) => gm[i] = v/(gn||1));
+    for (let k=c;k<Math.min(nb, c+nCal);k++) if (isNum(G[3][k])) gv += (G[3][k]-gm[0])**2 + (G[4][k]-gm[1])**2 + (G[5][k]-gm[2])**2;
+    return { gm, sd: Math.sqrt(gv/(gn||1)) };
+  };
+  let c0 = P.calibMode === 'still' ? findStill() : 0;
+  let cs = calStats(c0);
+  if (P.calibMode === 'auto' && cs.sd > 0.3){
+    const c1 = findStill(), cs1 = calStats(c1);
+    if (cs1.sd < cs.sd){
+      R.warn.push(`The bike moved during the first ${P.calibSec} s (sd ${cs.sd.toFixed(2)} m/s²), so "down" was taken from the stillest stretch instead (t = ${((tg[c1]-tA)/1000).toFixed(0)} s, sd ${cs1.sd.toFixed(2)}).`);
+      c0 = c1; cs = cs1;
     }
   }
-  const gm = [0,0,0]; let gn = 0, gv = 0;
-  for (let k=c0;k<Math.min(nb, c0+nCal);k++) if (isNum(G[3][k])){ gm[0]+=G[3][k]; gm[1]+=G[4][k]; gm[2]+=G[5][k]; gn++; }
-  gm.forEach((v,i) => gm[i] = v/(gn||1));
-  for (let k=c0;k<Math.min(nb, c0+nCal);k++) if (isNum(G[3][k])) gv += (G[3][k]-gm[0])**2 + (G[4][k]-gm[1])**2 + (G[5][k]-gm[2])**2;
+  const gm = cs.gm;
   const u = vnorm(gm);
-  R.checks.gravityMag = Math.hypot(...gm); R.checks.calibSd = Math.sqrt(gv/(gn||1)); R.checks.calibAt = (tg[c0]-tA)/1000;
-  if (R.checks.calibSd > 0.3) R.warn.push(`The bike was not still during calibration (sd ${R.checks.calibSd.toFixed(2)} m/s²). Try "still" mode.`);
+  R.checks.gravityMag = Math.hypot(...gm); R.checks.calibSd = cs.sd; R.checks.calibAt = (tg[c0]-tA)/1000;
+  if (R.checks.calibSd > 0.3) R.warn.push(`The bike was not still during calibration (sd ${R.checks.calibSd.toFixed(2)} m/s²), so forward / sideways / vertical may be slightly mixed.`);
 
   // horizontal basis: h1 from metadata axis projected onto horizontal plane; h2 = right of h1
   let f0 = AXES[R.meta.forward_axis] || AXES.top;
@@ -466,6 +486,9 @@ function processSession(s){
   let cF = corr(fwd1, gAcc1);
   let fSign = 1;
   if (P.autoSign === 'yes' && cF.r < 0){ fSign = -1; cF.r = -cF.r; }
+  // manual "Flip forward" wins; otherwise a flip requested by the partner-phone check
+  R.checks.fwdFlip = s.flipFwd ? 'manual' : s.autoFlip ? 'partner' : '';
+  if (R.checks.fwdFlip){ fSign = -fSign; if (isNum(cF.r)) cF.r = -cF.r; }
   R.checks.fwdAngleDeg = theta*180/Math.PI; R.checks.corrFwd = cF;
 
   let ySign = 1, cY = corr(yaw1, hRate1);
@@ -553,6 +576,16 @@ function attachAudio(s, R, off){
     row.cls = classify({ ...row, laeq: row.laeqRaw });
     rows.push(row);
   }
+  // speed gate: at riding speed, wind on the mic produces speech-band, flickering noise that passes the voices rule
+  const g = R.series && R.series.gps;
+  if (g){
+    const sp = interp(g.t, g.spd, rows.map(x => x.t));
+    rows.forEach((x, i) => { x.speedKmh = isNum(sp[i]) ? sp[i]*3.6 : NaN;
+      if (x.cls === 'voices_like' && isNum(x.speedKmh) && x.speedKmh > P.voiceMaxSpeed) x.cls = 'wind_suspect'; });
+  } else R.warn.push('No GPS, so voices-like sound could not be checked against riding speed. Wind can sound like voices.');
+  const calOff = parseFloat(R.meta.cal_offset_db), med = pctl(rows.map(x => x.laeq), 0.5);
+  if (isNum(calOff) && calOff !== 0 && isNum(med) && med < 30)
+    R.warn.push(`The sound calibration offset (${calOff} dB) looks like a sound-meter reading, not a difference: calibrated levels have a median of ${med.toFixed(0)} dB, but outdoor sound is about 45–80 dB(A). The offset should be (meter reading) − (this phone's laeq_dbfs at the same moment). Until it's fixed, compare rides by relative level only.`);
   R.audio = rows;
   const cnt = {}; rows.forEach(x => cnt[x.cls] = (cnt[x.cls]||0)+1); R.checks.classCounts = cnt;
 }
@@ -622,7 +655,8 @@ function buildSegments(R){
     const nStops = evs.filter(e => e.type === 'stop' && inSeg(e)).length;
     const nBrakes = evs.filter(e => e.type === 'hard_brake' && inSeg(e)).length;
     const nTurns = evs.filter(e => e.type.startsWith('turn') && inSeg(e)).length;
-    const comps = { noise: isNum(laeq) ? clamp01((laeq - P.noiseLo)/(P.noiseHi - P.noiseLo)) : NaN,
+    const [nLo, nHi] = ST.noiseRange || [P.noiseLo, P.noiseHi];
+    const comps = { noise: isNum(laeq) ? clamp01((laeq - nLo)/((nHi - nLo) || 1)) : NaN,
       voices: frac('voices_like'), stops: clamp01(nStops / mins / 2), brakes: clamp01(nBrakes / mins / 2) };
     const W = { noise: P.wNoise, voices: P.wVoices, stops: P.wStops, brakes: P.wBrakes };
     let num = 0, den = 0; for (const k in comps) if (isNum(comps[k])){ num += W[k]*comps[k]; den += W[k]; }
@@ -631,7 +665,7 @@ function buildSegments(R){
       start_iso: new Date(t0).toISOString(), duration_s: (t1-t0)/1000,
       lat_start: xs.find(x => isNum(x.lat))?.lat ?? NaN, lon_start: xs.find(x => isNum(x.lon))?.lon ?? NaN,
       mean_speed_kmh: meanOf(xs.map(x => x.speed_mps))*3.6, laeq_db: laeq, l90_db: pctl(xs.map(x => x.laeq_db), 0.1),
-      pct_voices: frac('voices_like')*100, pct_music: frac('music_like')*100, pct_wind: frac('wind_lowfreq')*100,
+      pct_voices: frac('voices_like')*100, pct_music: frac('music_like')*100, pct_wind: (frac('wind_lowfreq') + frac('wind_suspect'))*100,
       stops: nStops, hard_brakes: nBrakes, turns: nTurns,
       markers: mk.filter(inSeg).map(m => m.label).join(' '),
       busyness_score: den ? 100*num/den : NaN
@@ -717,6 +751,15 @@ function render(results){
   const ms = markerShapes(results);
   /* ---- QC tiles ---- */
   const qc = $('qc'); qc.innerHTML = '';
+  const nm = s => esc(shortName(ST.results.get(s.sid) || { meta: s.meta || {}, sid: s.sid }));
+  const pr = (ST.pairs || []).map(p => {
+    const cls = !isNum(p.fwdR) ? '' : p.fwdR >= 0.5 ? 'good' : p.fwdR >= 0.2 ? 'meh' : 'badc';
+    const snd = (x, y, d) => d && d.n ? `${d.wind}/${d.n} of ${x}'s voices-like seconds are wind on ${y}` : '';
+    const extra = [snd(nm(p.a), nm(p.b), p.soundAB), snd(nm(p.b), nm(p.a), p.soundBA)].filter(Boolean).join('; ');
+    return `<li><b>${nm(p.a)}</b> + <b>${nm(p.b)}</b> (${esc(p.a.sid)}): forward accel agreement <span class="${cls}">r = ${isNum(p.fwdR) ? p.fwdR.toFixed(2) : '–'}</span>
+      ${p.flipped ? ` · <b>flipped ${esc(nm(ST.sessions.get(p.flipped)))} forward</b> because the phones disagreed and it had weaker GPS evidence` : ''}${extra ? ' · ' + extra : ''}</li>`; }).join('');
+  qc.insertAdjacentHTML('beforeend', `<p class="muted">Noise score range used for busyness: ${r(ST.noiseRange?.[0],1)} to ${r(ST.noiseRange?.[1],1)} dB (${P.noiseAuto === 'auto' ? 'auto from all loaded sessions' : 'manual'}).</p>
+    ${pr ? `<p style="margin:6px 0 2px;font-weight:600">Two phones on the same ride</p><ul class="muted" style="margin-top:2px">${pr}</ul>` : ''}`);
   results.forEach((R, i) => {
     const c = R.checks, col = SESS_COLORS[i % SESS_COLORS.length];
     const q = (v, good, ok) => !isNum(v) ? '' : v >= good ? 'good' : v >= ok ? 'meh' : 'badc';
@@ -726,7 +769,7 @@ function render(results){
       <div class="tiles">
         ${tile('Motion sample rate', isNum(c.motionHz) ? c.motionHz.toFixed(0)+' Hz' : '–', '', `${c.gaps||0} gaps &gt;1 s`)}
         ${tile('Gravity during calibration', isNum(c.gravityMag) ? c.gravityMag.toFixed(2)+' m/s²' : '–', isNum(c.calibSd) ? (c.calibSd < 0.15 ? 'good' : c.calibSd < 0.3 ? 'meh' : 'badc') : '', isNum(c.calibSd) ? `stillness sd ${c.calibSd.toFixed(3)} at t=${c.calibAt.toFixed(0)} s` : '')}
-        ${tile('Fwd accel vs GPS', isNum(c.corrFwd?.r) ? 'r = '+c.corrFwd.r.toFixed(2) : 'no GPS', q(c.corrFwd?.r, 0.6, 0.3), isNum(c.fwdAngleDeg) ? `axis rotated ${c.fwdAngleDeg.toFixed(0)}° · n=${c.corrFwd.n}` : '')}
+        ${tile('Fwd accel vs GPS', isNum(c.corrFwd?.r) ? 'r = '+c.corrFwd.r.toFixed(2) : 'no GPS', q(c.corrFwd?.r, 0.6, 0.3), (isNum(c.fwdAngleDeg) ? `axis rotated ${c.fwdAngleDeg.toFixed(0)}° · n=${c.corrFwd.n}` : '') + (c.fwdFlip ? ` · flipped (${c.fwdFlip})` : ''))}
         ${tile('Gyro vs GPS heading', isNum(c.corrYaw?.r) ? 'r = '+c.corrYaw.r.toFixed(2) : '–', q(c.corrYaw?.r, 0.6, 0.3), c.signs ? `signs fwd ${c.signs.fwd>0?'+':'−'} yaw ${c.signs.yaw>0?'+':'−'} lat ${c.signs.lat>0?'+':'−'}` : '')}
         ${tile('Sideways vs v·yaw', isNum(c.corrLat?.r) ? 'r = '+c.corrLat.r.toFixed(2) : '–', q(c.corrLat?.r, 0.5, 0.25), 'centripetal check')}
         ${tile('Stops: vibration vs GPS', isNum(c.stopAgree) ? (c.stopAgree*100).toFixed(0)+'% agree' : '–', q(c.stopAgree, 0.9, 0.75), c.stopVib ? `false alarms ${c.stopVib.fp}s · missed ${c.stopVib.fn}s` : 'needs GPS')}
@@ -870,9 +913,48 @@ let runTimer = null;
 function runAll(){ clearTimeout(runTimer); runTimer = setTimeout(() => {
   ST.results.clear();
   const list = [...ST.sessions.values()].filter(s => s.include);
-  list.forEach(s => { try { ST.results.set(s.sid, processSession(s)); } catch (e){ console.error(e); alert(`Could not process ${s.sid}: ${e.message}`); } });
+  // noise-score range shared by all sessions so busyness scores are comparable
+  const allL = list.flatMap(s => s.audio ? s.audio.cols.laeq_cal_db : []).filter(isNum);
+  ST.noiseRange = P.noiseAuto === 'auto' && allL.length > 20 ? [pctl(allL, 0.05), pctl(allL, 0.95)] : [P.noiseLo, P.noiseHi];
+  const run = s => { try { ST.results.set(s.sid, processSession(s)); } catch (e){ console.error(e); alert(`Could not process ${s.sid}: ${e.message}`); } };
+  list.forEach(s => { s.autoFlip = false; run(s); });
+  ST.pairs = findPairs(list);
+  if (P.partnerSign === 'yes'){
+    ST.pairs.forEach(p => {
+      if (!(p.fwdR < -0.4)) return;
+      const score = s => { const c = ST.results.get(s.sid)?.checks.corrFwd; return s.flipFwd ? Infinity : (c && c.n >= 30 && isNum(c.r)) ? c.r : -1; };
+      const weak = score(p.a) <= score(p.b) ? p.a : p.b;
+      if (weak.flipFwd) return;
+      weak.autoFlip = true; run(weak); p.flipped = weak.sid;
+    });
+    ST.pairs.forEach(p => Object.assign(p, comparePair(p.a, p.b)));
+  }
   if (ST.results.size) render([...ST.results.values()]);
 }, 60); }
+
+// two sessions are a pair (same ride, two phones) if their motion time ranges overlap by ≥ 50 % of the shorter one
+function findPairs(list){
+  const span = s => { const t = s.motion?.cols.t_epoch_ms; return t && t.length ? [t[0] + s.offsetS*1000, t[t.length-1] + s.offsetS*1000] : null; };
+  const used = new Set(), pairs = [];
+  list.forEach(a => {
+    if (used.has(a.sid)) return; const sa = span(a); if (!sa) return;
+    let best = null, bestO = 0;
+    list.forEach(b => { if (b === a || used.has(b.sid)) return; const sb = span(b); if (!sb) return;
+      const o = (Math.min(sa[1], sb[1]) - Math.max(sa[0], sb[0])) / Math.min(sa[1]-sa[0], sb[1]-sb[0]);
+      if (o > 0.5 && o > bestO){ bestO = o; best = b; } });
+    if (best){ used.add(a.sid); used.add(best.sid); pairs.push({ a, b: best, ...comparePair(a, best) }); }
+  });
+  return pairs;
+}
+function comparePair(a, b){
+  const A = ST.results.get(a.sid), B = ST.results.get(b.sid); if (!A || !B) return {};
+  const fwdR = A.series.tg.length && B.series.tg.length ? corr(A.series.fwd, interp(B.series.tg, B.series.fwd, A.series.tg)).r : NaN;
+  // sound: of the seconds one phone calls voices-like, how many does the other phone call wind?
+  const disagree = (X, Y) => { if (!X.audio || !Y.audio) return null; const v = X.audio.filter(x => x.cls === 'voices_like'); if (!v.length) return { n: 0, wind: 0 };
+    const near = t => Y.audio.reduce((m, y) => Math.abs(y.t - t) < Math.abs(m.t - t) ? y : m, Y.audio[0]);
+    return { n: v.length, wind: v.filter(x => /wind/.test(near(x.t).cls)).length }; };
+  return { fwdR, soundAB: disagree(A, B), soundBA: disagree(B, A) };
+}
 
 /* ======================= export ======================= */
 function csvCell(v){ if (v == null || (typeof v === 'number' && !isFinite(v))) return ''; const s = typeof v === 'number' ? String(r(v, 5)) : String(v);
@@ -905,13 +987,17 @@ function makeDemo(){
   const gauss = () => Math.sqrt(-2*Math.log(rand()+1e-12)) * Math.cos(2*Math.PI*rand());
   const T = 600, t0 = Date.parse('2026-11-08T17:00:00Z');
   // speed profile (m/s) with stops, plus heading changes (turns)
-  const speedAt = t => { const stops = [[120,140],[300,330],[480,492]];
+  const baseSpeed = t => { const stops = [[120,140],[300,330],[480,492]];
     if (t < 6) return 0;
     for (const [a,b] of stops){ if (t >= a && t <= b) return 0;
       if (t > a-4 && t < a) return 5.5*(a-t)/4 * (a === 300 ? 0.6 : 1);   // braking (harder at 300)
       if (t > b && t < b+5) return 5.5*(t-b)/5; }
     if (t < 11) return 5.5*(t-6)/5;
     return 5.5 + 0.4*Math.sin(t/17); };
+  // riders slow to walking pace through the crowded stretches (5 s ramps in and out)
+  const slowZones = [[95,165],[455,525]];
+  const speedAt = t => { let s = 0; for (const [a,b] of slowZones) s = Math.max(s, clamp01(Math.min((t-a)/5, (b-t)/5)));
+    return Math.min(baseSpeed(t), 1.8 + (5.5-1.8)*(1-s)); };
   const turns = [[160,+90,4],[350,-90,5],[520,+90,4],[260,-45,3]];
   const hRate = t => turns.reduce((s,[c,a,d]) => s + (t >= c && t < c+d ? a/d : 0), 0);   // deg/s, + = right
   // integrate path at 50 Hz
